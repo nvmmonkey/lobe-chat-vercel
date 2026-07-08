@@ -1,7 +1,7 @@
+import { AGENT_CHAT_URL } from '@lobechat/const';
 import { produce } from 'immer';
 
 import { INBOX_SESSION_ID } from '@/const/session';
-import { SESSION_CHAT_URL } from '@/const/url';
 import type { GlobalStore } from '@/store/global';
 import type { ModelDetailPanelExpandedKey, WorkingSidebarTab } from '@/store/global/initialState';
 import type { StoreSetter } from '@/store/types';
@@ -24,7 +24,7 @@ export class GlobalWorkspacePaneActionImpl {
   }
 
   switchBackToChat = (sessionId?: string): void => {
-    const target = SESSION_CHAT_URL(sessionId || INBOX_SESSION_ID, this.#get().isMobile);
+    const target = AGENT_CHAT_URL(sessionId || INBOX_SESSION_ID, this.#get().isMobile);
     getStableNavigate()?.(target);
   };
 
@@ -79,6 +79,16 @@ export class GlobalWorkspacePaneActionImpl {
     const showLeftPanel =
       typeof newValue === 'boolean' ? newValue : !this.#get().status.showLeftPanel;
     this.#get().updateSystemStatus({ showLeftPanel }, n('toggleLeftPanel', newValue));
+  };
+
+  toggleAgentBuilderPanel = (newValue?: boolean): void => {
+    const showAgentBuilderPanel =
+      typeof newValue === 'boolean' ? newValue : !this.#get().status.showAgentBuilderPanel;
+
+    this.#get().updateSystemStatus(
+      { showAgentBuilderPanel },
+      n('toggleAgentBuilderPanel', newValue),
+    );
   };
 
   togglePageAgentPanel = (newValue?: boolean): void => {
@@ -141,13 +151,6 @@ export class GlobalWorkspacePaneActionImpl {
       typeof newValue === 'boolean' ? !newValue : !this.#get().status.noWideScreen;
 
     this.#get().updateSystemStatus({ noWideScreen }, n('toggleWideScreen', newValue));
-  };
-
-  toggleZenMode = (): void => {
-    const { status } = this.#get();
-    const nextZenMode = !status.zenMode;
-
-    this.#get().updateSystemStatus({ zenMode: nextZenMode }, n('toggleZenMode'));
   };
 
   updateModelDetailPanelExpandedKeys = (keys: ModelDetailPanelExpandedKey[]): void => {

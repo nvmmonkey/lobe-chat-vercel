@@ -12,14 +12,16 @@ import type {
   RunCommandParams,
   WriteLocalFileParams,
 } from '@lobechat/electron-client-ipc';
+import { LocalSystemExecutionRuntime } from '@lobechat/tool-runtime';
 import type { BuiltinToolResult } from '@lobechat/types';
 import { BaseExecutor } from '@lobechat/types';
 
 import { localFileService } from '@/services/electron/localFileService';
 
-import { LocalSystemExecutionRuntime } from '../../ExecutionRuntime';
 import { LocalSystemIdentifier } from '../../types';
 import { resolveArgsWithScope } from '../../utils/path';
+
+const DEFAULT_FILE_SEARCH_LIMIT = 100;
 
 const LocalSystemApiEnum = {
   editFile: 'editFile' as const,
@@ -66,7 +68,8 @@ class LocalSystemExecutor extends BaseExecutor<typeof LocalSystemApiEnum> {
   }): BuiltinToolResult {
     const errorMessage =
       typeof output.error?.message === 'string' ? output.error.message : undefined;
-    const safeContent = output.content || errorMessage || 'Tool execution failed';
+    const safeContent =
+      output.content || errorMessage || '[UNKNOWN_EXEC_ERROR] Tool execution failed';
 
     if (!output.success) {
       return {
@@ -231,6 +234,10 @@ class LocalSystemExecutor extends BaseExecutor<typeof LocalSystemApiEnum> {
     try {
       const result = await this.runtime.globFiles({
         directory: params.scope,
+        limit:
+          Number.isFinite(params.limit) && params.limit && params.limit > 0
+            ? Math.floor(params.limit)
+            : DEFAULT_FILE_SEARCH_LIMIT,
         pattern: params.pattern,
       });
       return this.toResult(result);

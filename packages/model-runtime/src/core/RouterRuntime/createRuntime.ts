@@ -4,6 +4,7 @@
 import type { GoogleGenAIOptions } from '@google/genai';
 import type { ChatModelCard } from '@lobechat/types';
 import { AgentRuntimeErrorType } from '@lobechat/types';
+import { createTimingHelpers, getDurationMs } from '@lobechat/utils';
 import debug from 'debug';
 import type { ClientOptions } from 'openai';
 import type OpenAI from 'openai';
@@ -12,6 +13,8 @@ import type { Stream } from 'openai/streaming';
 import { LobeOpenAI } from '../../providers/openai';
 import { LobeVertexAI } from '../../providers/vertexai';
 import type {
+  ASROptions,
+  ASRPayload,
   ChatCompletionErrorPayload,
   ChatMethodOptions,
   ChatStreamCallbacks,
@@ -33,6 +36,7 @@ import type {
 } from '../../types';
 import { AgentRuntimeError } from '../../utils/createError';
 import { isNonRetryableRequestError } from '../../utils/isNonRetryableRequestError';
+import type { ModelIdMappingOptions } from '../../utils/modelIdMapping';
 import { postProcessModelList } from '../../utils/postProcessModelList';
 import { safeParseJSON } from '../../utils/safeParseJSON';
 import type { LobeRuntimeAI } from '../BaseAI';
@@ -44,6 +48,7 @@ import type {
 import type { ApiType, RuntimeClass } from './apiTypes';
 
 const log = debug('lobe-model-runtime:router-runtime');
+const { logger: timing } = createTimingHelpers('lobe-server:chat:lobehub:timing');
 
 interface ProviderIniOptions extends Record<string, any> {
   accessKeyId?: string;
@@ -53,6 +58,7 @@ interface ProviderIniOptions extends Record<string, any> {
   baseURL?: string;
   baseURLOrAccountID?: string;
   dangerouslyAllowBrowser?: boolean;
+  modelIdMapping?: Record<string, string>;
   region?: string;
   sdkType?: string;
   sessionToken?: string;
@@ -80,12 +86,15 @@ interface RouterInstance {
   runtime?: RuntimeClass;
 }
 
-type ConstructorOptions<T extends Record<string, any> = any> = ClientOptions & T;
+// OpenAI SDK v6 widened `apiKey` to `string | ApiKeySetter`; lobehub only ever
+// passes a plain string, so narrow it back to keep `.trim()` / string assignments valid.
+type LobeClientOptions = Omit<ClientOptions, 'apiKey'> & { apiKey?: string };
+type ConstructorOptions<T extends Record<string, any> = any> = LobeClientOptions & T;
 
 type Routers =
   | RouterInstance[]
   | ((
-      options: ClientOptions & Record<string, any>,
+      options: LobeClientOptions & Record<string, any>,
       runtimeContext: {
         model?: string;
       },
@@ -104,6 +113,17 @@ export interface RouteAttemptResult {
   routerId?: string;
   success: boolean;
   userId?: string;
+}
+
+interface RouteAttemptMetadata {
+  apiType: string;
+  channelId?: string;
+  durationMs: number;
+  optionIndex: number;
+  providerId: string;
+  routerId?: string;
+  success: boolean;
+  totalOptions: number;
 }
 
 export interface CreateRouterRuntimeOptions<T extends Record<string, any> = any> {
@@ -156,7 +176,7 @@ export interface CreateRouterRuntimeOptions<T extends Record<string, any> = any>
   ) => Promise<HandleCreateVideoWebhookResult>;
   id: string;
   models?:
-    | ((params: { client: OpenAI }) => Promise<ChatModelCard[]>)
+    | ((params: { client: OpenAI; options?: ConstructorOptions<T> }) => Promise<ChatModelCard[]>)
     | {
         transformModel?: (model: OpenAI.Model) => ChatModelCard;
       };
@@ -184,12 +204,22 @@ export const createRouterRuntime = ({
   ...params
 }: CreateRouterRuntimeOptions) => {
   return class UniformRuntime implements LobeRuntimeAI {
-    public _options: ClientOptions & Record<string, any>;
+    public _options: LobeClientOptions & Record<string, any>;
     private _routers: Routers;
     private _params: any;
     private _id: string;
 
-    constructor(options: ClientOptions & Record<string, any> = {}) {
+    private attachRouteAttemptMetadata(
+      metadata: Record<string, unknown> | undefined,
+      routeAttempt: RouteAttemptMetadata,
+    ) {
+      if (!metadata || this._id !== 'lobehub') return;
+
+      metadata.routeAttempt = routeAttempt;
+    }
+
+    constructor(options: LobeClientOptions & Record<string, any> = {}) {
+      const startedAt = Date.now();
       this._options = {
         ...options,
         apiKey: options.apiKey?.trim() || DEFAULT_API_KEY,
@@ -200,36 +230,76 @@ export const createRouterRuntime = ({
       this._routers = routers;
       this._params = params;
       this._id = options.id ?? id;
+
+      if (this._id === 'lobehub') {
+        timing(
+          'constructor done providerId=%s durationMs=%d hasApiKey=%s hasBaseURL=%s',
+          this._id,
+          getDurationMs(startedAt),
+          !!this._options.apiKey,
+          !!this._options.baseURL,
+        );
+      }
     }
 
     /**
      * Resolve routers configuration and validate
      */
     private async resolveRouters(model?: string): Promise<RouterInstance[]> {
-      const resolvedRouters =
-        typeof this._routers === 'function'
-          ? await this._routers(this._options, { model })
-          : this._routers;
+      const startedAt = Date.now();
+      try {
+        const resolvedRouters =
+          typeof this._routers === 'function'
+            ? await this._routers(this._options, { model })
+            : this._routers;
 
-      if (resolvedRouters.length === 0) {
-        throw AgentRuntimeError.chat({
-          error: { message: 'empty providers' },
-          errorType: AgentRuntimeErrorType.NoAvailableProvider,
-          provider: this._id,
-        });
+        if (this._id === 'lobehub') {
+          timing(
+            'resolveRouters done model=%s durationMs=%d routerCount=%d dynamic=%s',
+            model,
+            getDurationMs(startedAt),
+            resolvedRouters.length,
+            typeof this._routers === 'function',
+          );
+        }
+
+        if (resolvedRouters.length === 0) {
+          throw AgentRuntimeError.chat({
+            error: { message: 'empty providers' },
+            errorType: AgentRuntimeErrorType.NoAvailableProvider,
+            provider: this._id,
+          });
+        }
+
+        return resolvedRouters;
+      } catch (error) {
+        if (this._id === 'lobehub') {
+          timing('resolveRouters error model=%s durationMs=%d', model, getDurationMs(startedAt));
+        }
+        throw error;
       }
-
-      return resolvedRouters;
     }
 
     private async resolveMatchedRouter(model: string): Promise<RouterInstance> {
+      const startedAt = Date.now();
       const resolvedRouters = await this.resolveRouters(model);
       const baseURL = this._options.baseURL;
 
       // Priority 1: Match by baseURLPattern (RegExp only)
       if (baseURL) {
         const baseURLMatch = resolvedRouters.find((router) => router.baseURLPattern?.test(baseURL));
-        if (baseURLMatch) return baseURLMatch;
+        if (baseURLMatch) {
+          if (this._id === 'lobehub') {
+            timing(
+              'resolveMatchedRouter done model=%s match=baseURL routerId=%s apiType=%s durationMs=%d',
+              model,
+              baseURLMatch.id,
+              baseURLMatch.apiType,
+              getDurationMs(startedAt),
+            );
+          }
+          return baseURLMatch;
+        }
       }
 
       // Priority 2: Match by models
@@ -239,17 +309,48 @@ export const createRouterRuntime = ({
         }
         return false;
       });
-      if (modelMatch) return modelMatch;
+      if (modelMatch) {
+        if (this._id === 'lobehub') {
+          timing(
+            'resolveMatchedRouter done model=%s match=models routerId=%s apiType=%s durationMs=%d',
+            model,
+            modelMatch.id,
+            modelMatch.apiType,
+            getDurationMs(startedAt),
+          );
+        }
+        return modelMatch;
+      }
 
       // Fallback: Use the last router
-      return resolvedRouters.at(-1)!;
+      const fallbackRouter = resolvedRouters.at(-1)!;
+      if (this._id === 'lobehub') {
+        timing(
+          'resolveMatchedRouter done model=%s match=fallback routerId=%s apiType=%s durationMs=%d',
+          model,
+          fallbackRouter.id,
+          fallbackRouter.apiType,
+          getDurationMs(startedAt),
+        );
+      }
+      return fallbackRouter;
     }
 
     private normalizeRouterOptions(router: RouterInstance): RouterOptionItem[] {
+      const startedAt = Date.now();
       const routerOptions = Array.isArray(router.options) ? router.options : [router.options];
 
       if (routerOptions.length === 0 || routerOptions.some((optionItem) => !optionItem)) {
         throw new Error('empty provider options');
+      }
+
+      if (this._id === 'lobehub') {
+        timing(
+          'normalizeRouterOptions done routerId=%s options=%d durationMs=%d',
+          router.id,
+          routerOptions.length,
+          getDurationMs(startedAt),
+        );
       }
 
       return routerOptions;
@@ -268,6 +369,7 @@ export const createRouterRuntime = ({
       remark?: string;
       runtime: LobeRuntimeAI;
     }> {
+      const startedAt = Date.now();
       const { apiType: optionApiType, id: channelId, remark, ...optionOverrides } = optionItem;
       const resolvedApiType = optionApiType ?? router.apiType;
       const finalOptions = {
@@ -283,7 +385,7 @@ export const createRouterRuntime = ({
       if (resolvedApiType === 'vertexai') {
         const { apiKey, googleAuthOptions, project, location, ...restOptions } = finalOptions;
         const credentials = safeParseJSON<Record<string, any>>(apiKey);
-        const vertexOptions: GoogleGenAIOptions = {
+        const vertexOptions: GoogleGenAIOptions & ModelIdMappingOptions = {
           ...(restOptions as GoogleGenAIOptions),
           vertexai: true,
         };
@@ -296,6 +398,16 @@ export const createRouterRuntime = ({
 
         if (project) vertexOptions.project = project;
         if (location) vertexOptions.location = location as GoogleGenAIOptions['location'];
+
+        if (this._id === 'lobehub') {
+          timing(
+            'createRuntimeFromOption done routerId=%s channelId=%s apiType=%s durationMs=%d vertex=true',
+            router.id,
+            channelId,
+            resolvedApiType,
+            getDurationMs(startedAt),
+          );
+        }
 
         return {
           channelId,
@@ -312,6 +424,16 @@ export const createRouterRuntime = ({
           : (baseRuntimeMap[resolvedApiType] ?? LobeOpenAI);
       const runtime: LobeRuntimeAI = new providerAI({ ...finalOptions, id: this._id });
 
+      if (this._id === 'lobehub') {
+        timing(
+          'createRuntimeFromOption done routerId=%s channelId=%s apiType=%s durationMs=%d',
+          router.id,
+          channelId,
+          resolvedApiType,
+          getDurationMs(startedAt),
+        );
+      }
+
       return {
         channelId,
         id: resolvedApiType,
@@ -325,9 +447,21 @@ export const createRouterRuntime = ({
       requestHandler: (runtime: LobeRuntimeAI) => Promise<T>,
       metadata?: Record<string, unknown>,
     ): Promise<T> {
+      const totalStartedAt = Date.now();
       const matchedRouter = await this.resolveMatchedRouter(model);
       const routerOptions = this.normalizeRouterOptions(matchedRouter);
       const totalOptions = routerOptions.length;
+
+      if (this._id === 'lobehub') {
+        timing(
+          'runWithFallback start model=%s routerId=%s apiType=%s options=%d traceId=%s',
+          model,
+          matchedRouter.id,
+          matchedRouter.apiType,
+          totalOptions,
+          metadata?.traceId,
+        );
+      }
 
       log(
         'resolve router for model=%s apiType=%s options=%d',
@@ -349,7 +483,33 @@ export const createRouterRuntime = ({
         } = await this.createRuntimeFromOption(matchedRouter, optionItem);
 
         try {
+          if (this._id === 'lobehub') {
+            timing(
+              'attempt request start model=%s attempt=%d/%d routerId=%s channelId=%s apiType=%s traceId=%s',
+              model,
+              attempt,
+              totalOptions,
+              matchedRouter.id,
+              channelId,
+              resolvedApiType,
+              metadata?.traceId,
+            );
+          }
           const result = await requestHandler(runtime);
+          if (this._id === 'lobehub') {
+            timing(
+              'attempt request success model=%s attempt=%d/%d routerId=%s channelId=%s apiType=%s durationMs=%d totalMs=%d traceId=%s',
+              model,
+              attempt,
+              totalOptions,
+              matchedRouter.id,
+              channelId,
+              resolvedApiType,
+              getDurationMs(startTime),
+              getDurationMs(totalStartedAt),
+              metadata?.traceId,
+            );
+          }
 
           if (totalOptions > 1 && attempt > 1) {
             log(
@@ -389,9 +549,34 @@ export const createRouterRuntime = ({
               log('onRouteAttempt callback error: %O', e);
             });
 
+          this.attachRouteAttemptMetadata(metadata, {
+            apiType: resolvedApiType,
+            channelId,
+            durationMs: Date.now() - startTime,
+            optionIndex: index,
+            providerId: id,
+            routerId: matchedRouter.id,
+            success: true,
+            totalOptions,
+          });
+
           return result;
         } catch (error) {
           lastError = error;
+          if (this._id === 'lobehub') {
+            timing(
+              'attempt request error model=%s attempt=%d/%d routerId=%s channelId=%s apiType=%s durationMs=%d totalMs=%d traceId=%s',
+              model,
+              attempt,
+              totalOptions,
+              matchedRouter.id,
+              channelId,
+              resolvedApiType,
+              getDurationMs(startTime),
+              getDurationMs(totalStartedAt),
+              metadata?.traceId,
+            );
+          }
 
           params
             .onRouteAttempt?.({
@@ -417,12 +602,25 @@ export const createRouterRuntime = ({
           }
 
           try {
+            const shouldStopStartedAt = Date.now();
             const shouldStopFallback = await params.shouldStopFallback?.({
               error,
               metadata,
               model,
               optionIndex: index,
             });
+
+            if (this._id === 'lobehub') {
+              timing(
+                'shouldStopFallback done model=%s attempt=%d/%d durationMs=%d shouldStop=%s traceId=%s',
+                model,
+                attempt,
+                totalOptions,
+                getDurationMs(shouldStopStartedAt),
+                shouldStopFallback,
+                metadata?.traceId,
+              );
+            }
 
             if (shouldStopFallback) {
               throw error;
@@ -460,6 +658,17 @@ export const createRouterRuntime = ({
         }
       }
 
+      if (this._id === 'lobehub') {
+        timing(
+          'runWithFallback failed model=%s routerId=%s options=%d totalMs=%d traceId=%s',
+          model,
+          matchedRouter.id,
+          totalOptions,
+          getDurationMs(totalStartedAt),
+          metadata?.traceId,
+        );
+      }
+
       throw lastError ?? new Error('empty provider options');
     }
 
@@ -477,7 +686,10 @@ export const createRouterRuntime = ({
         typeof modelsOption === 'function' && // Use the same baseURL-matched runtime as chat routing for provider model discovery.
         'client' in runtime
       ) {
-        const modelList = await modelsOption({ client: (runtime as any).client });
+        const modelList = await modelsOption({
+          client: (runtime as any).client,
+          options: this._options,
+        });
         return await postProcessModelList(modelList);
       }
 
@@ -511,7 +723,7 @@ export const createRouterRuntime = ({
     async createImage(payload: CreateImagePayload, options?: CreateImageMethodOptions) {
       return this.runWithFallback(
         payload.model,
-        (runtime) => runtime.createImage!(payload),
+        (runtime) => runtime.createImage!(payload, options),
         options?.metadata,
       );
     }
@@ -519,9 +731,25 @@ export const createRouterRuntime = ({
     async createVideo(payload: CreateVideoPayload, options?: CreateVideoMethodOptions) {
       return this.runWithFallback(
         payload.model,
-        (runtime) => runtime.createVideo!(payload),
+        (runtime) => runtime.createVideo!(payload, options),
         options?.metadata,
       );
+    }
+
+    async handlePollVideoStatus(inferenceId: string) {
+      const resolvedRouters = await this.resolveRouters();
+      const matchedRouter = this._options.baseURL
+        ? (resolvedRouters.find((router) => router.baseURLPattern?.test(this._options.baseURL!)) ??
+          resolvedRouters.at(-1)!)
+        : resolvedRouters.at(-1)!;
+      const routerOptions = this.normalizeRouterOptions(matchedRouter);
+      const { runtime } = await this.createRuntimeFromOption(matchedRouter, routerOptions[0]);
+
+      if (!runtime.handlePollVideoStatus) {
+        throw new Error('Video polling is not supported by the matched runtime');
+      }
+
+      return runtime.handlePollVideoStatus(inferenceId);
     }
 
     async handleCreateVideoWebhook(payload: HandleCreateVideoWebhookPayload) {
@@ -551,6 +779,12 @@ export const createRouterRuntime = ({
     async textToSpeech(payload: TextToSpeechPayload, options?: EmbeddingsOptions) {
       return this.runWithFallback(payload.model, (runtime) =>
         runtime.textToSpeech!(payload, options),
+      );
+    }
+
+    async transcribe(payload: ASRPayload, options?: ASROptions) {
+      return this.runWithFallback(payload.model, (runtime) =>
+        runtime.transcribe!(payload, options),
       );
     }
   };

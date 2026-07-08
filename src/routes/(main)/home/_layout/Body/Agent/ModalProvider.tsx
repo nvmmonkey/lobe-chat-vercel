@@ -1,15 +1,18 @@
 'use client';
 
+import { AGENT_CHAT_URL } from '@lobechat/const';
 import { type ReactNode, useCallback } from 'react';
 import { createContext, memo, use, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 
 import { ChatGroupWizard } from '@/components/ChatGroupWizard';
 import { MemberSelectionModal } from '@/components/MemberSelectionModal';
+import { openCreatePlatformAgentModal } from '@/features/CreatePlatformAgent';
 import EditingPopover from '@/features/EditingPopover';
+import { useWorkspaceAwareNavigate } from '@/features/Workspace/useWorkspaceAwareNavigate';
 import { CreateAgentModal } from '@/routes/(main)/home/_layout/hooks/useCreateModal';
 import { useAgentStore } from '@/store/agent';
 import { builtinAgentSelectors } from '@/store/agent/selectors';
+import { useGlobalStore } from '@/store/global';
 import { useHomeStore } from '@/store/home';
 
 import ConfigGroupModal from './Modals/ConfigGroupModal';
@@ -28,6 +31,7 @@ interface AgentModalContextValue {
   openConfigGroupModal: () => void;
   openCreateGroupModal: (sessionId: string) => void;
   openCreateModal: (type: 'agent' | 'group', options?: OpenCreateModalOptions) => void;
+  openCreatePlatformAgentModal: (options?: OpenCreateModalOptions) => void;
   openGroupWizardModal: (callbacks: GroupWizardCallbacks) => void;
   openMemberSelectionModal: (callbacks: MemberSelectionCallbacks) => void;
   setGroupWizardLoading: (loading: boolean) => void;
@@ -66,7 +70,7 @@ interface CreateModalRendererProps {
 }
 
 const CreateModalRenderer = memo<CreateModalRendererProps>(({ open, type, groupId, onClose }) => {
-  const navigate = useNavigate();
+  const navigate = useWorkspaceAwareNavigate();
   const inboxAgentId = useAgentStore(builtinAgentSelectors.inboxAgentId);
   const storeCreateAgent = useAgentStore((s) => s.createAgent);
   const refreshAgentList = useHomeStore((s) => s.refreshAgentList);
@@ -87,12 +91,27 @@ const CreateModalRenderer = memo<CreateModalRendererProps>(({ open, type, groupI
   const handleCreateBlank = useCallback(async () => {
     if (type === 'agent') {
       const result = await storeCreateAgent({ groupId });
+      useGlobalStore.getState().toggleAgentBuilderPanel(true);
       navigate(`/agent/${result.agentId}/profile`);
       await refreshAgentList();
     } else {
       await sendAsGroup({ groupId, message: '' });
     }
   }, [type, storeCreateAgent, navigate, refreshAgentList, sendAsGroup, groupId]);
+
+  const handleOpenSkills = useCallback(
+    (identifier: string) => {
+      onClose();
+      navigate(`/settings/skill?tab=skill&skill=${encodeURIComponent(identifier)}`);
+    },
+    [navigate, onClose],
+  );
+
+  const handleTryInLobeAI = useCallback(() => {
+    if (!inboxAgentId) return;
+
+    navigate(AGENT_CHAT_URL(inboxAgentId, false));
+  }, [inboxAgentId, navigate]);
 
   return (
     <CreateAgentModal
@@ -101,7 +120,9 @@ const CreateModalRenderer = memo<CreateModalRendererProps>(({ open, type, groupI
       type={type}
       onClose={onClose}
       onCreateBlank={handleCreateBlank}
+      onOpenSkills={handleOpenSkills}
       onSubmit={handleSubmit}
+      onTryInLobeAI={handleTryInLobeAI}
     />
   );
 });
@@ -155,6 +176,9 @@ export const AgentModalProvider = memo<AgentModalProviderProps>(({ children }) =
         setCreateModalType(type);
         setCreateModalGroupId(options?.groupId);
         setCreateModalOpen(true);
+      },
+      openCreatePlatformAgentModal: (options?: OpenCreateModalOptions) => {
+        openCreatePlatformAgentModal({ groupId: options?.groupId });
       },
       openGroupWizardModal: (callbacks: GroupWizardCallbacks) => {
         setGroupWizardCallbacks(callbacks);

@@ -1,20 +1,40 @@
 'use client';
 
 import type { WorkSummaryItem } from '@lobechat/types';
-import { Flexbox } from '@lobehub/ui';
-import { createStaticStyles } from 'antd-style';
+import { createStaticStyles, Flexbox } from '@lobehub/ui';
 import isEqual from 'fast-deep-equal';
+import type { ComponentProps } from 'react';
 import { memo } from 'react';
 
 import WorkSummaryCard from '@/features/Work/WorkSummaryCard';
 
 import { dataSelectors, useConversationStore } from '../../store';
+import { useVisitorWorkOpen } from './useVisitorWorkOpen';
 
 const styles = createStaticStyles(({ css }) => ({
   container: css`
     width: 100%;
   `,
 }));
+
+interface MessageWorkListProps {
+  items: WorkSummaryItem[];
+  onOpen?: ComponentProps<typeof WorkSummaryCard>['onOpen'];
+}
+
+export const MessageWorkList = memo<MessageWorkListProps>(({ items, onOpen }) => {
+  if (items.length === 0) return null;
+
+  return (
+    <Flexbox className={styles.container} gap={8}>
+      {items.map((item) => (
+        <WorkSummaryCard item={item} key={item.id} onOpen={onOpen} />
+      ))}
+    </Flexbox>
+  );
+});
+
+MessageWorkList.displayName = 'MessageWorkList';
 
 interface MessageWorksProps {
   rootOperationId?: string | null;
@@ -30,15 +50,10 @@ const MessageWorks = memo<MessageWorksProps>(({ rootOperationId }) => {
     isEqual,
   );
 
-  if (data.length === 0) return null;
+  const agentShareId = useConversationStore((s) => s.context.agentShareId);
+  const handleVisitorOpen = useVisitorWorkOpen();
 
-  return (
-    <Flexbox className={styles.container} gap={8}>
-      {data.map((item) => (
-        <WorkSummaryCard item={item} key={item.id} />
-      ))}
-    </Flexbox>
-  );
+  return <MessageWorkList items={data} onOpen={agentShareId ? handleVisitorOpen : undefined} />;
 }, isEqual);
 
 MessageWorks.displayName = 'MessageWorks';

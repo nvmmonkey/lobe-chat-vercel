@@ -15,8 +15,6 @@ import {
   useConversationScroll,
 } from './useConversationScroll';
 
-vi.mock('zustand/traditional');
-
 vi.mock('../../store', async (importOriginal) => {
   const actual = await importOriginal<typeof ConversationStoreModule>();
   return {
@@ -120,6 +118,7 @@ describe('useConversationScroll — pin behavior', () => {
    */
   type StoreFixture = {
     displayMessages: Array<{ id: string; role: 'user' | 'assistant' }>;
+    hasLaterMessages?: boolean;
     isAIGenerating: boolean;
     virtuaScrollMethods: {
       getItemOffset?: (i: number) => number;
@@ -148,6 +147,7 @@ describe('useConversationScroll — pin behavior', () => {
     vi.mocked(useConversationStore).mockImplementation((selector: any) => {
       const probe: any = {
         displayMessages: currentFixture.displayMessages,
+        hasLaterMessages: currentFixture.hasLaterMessages ?? false,
         operationState: { isAIGenerating: currentFixture.isAIGenerating },
         virtuaScrollMethods: currentFixture.virtuaScrollMethods,
       };
@@ -156,6 +156,7 @@ describe('useConversationScroll — pin behavior', () => {
   };
 
   const renderScrollHook = (props: {
+    contextKey?: string;
     dataSource: string[];
     headerOffset?: number;
     isSecondLastMessageFromUser: boolean;
@@ -173,8 +174,9 @@ describe('useConversationScroll — pin behavior', () => {
     installStoreMock();
 
     const hook = renderHook(
-      ({ dataSource, isSecondLastMessageFromUser }) =>
+      ({ contextKey, dataSource, isSecondLastMessageFromUser }) =>
         useConversationScroll({
+          contextKey,
           dataSource,
           headerOffset: props.headerOffset,
           isSecondLastMessageFromUser,
@@ -182,18 +184,26 @@ describe('useConversationScroll — pin behavior', () => {
         }),
       {
         initialProps: {
+          contextKey: props.contextKey,
           dataSource: props.dataSource,
           isSecondLastMessageFromUser: props.isSecondLastMessageFromUser,
         },
       },
     );
 
-    const rerender = (next: { dataSource: string[]; isSecondLastMessageFromUser: boolean }) => {
+    const rerender = (next: {
+      contextKey?: string;
+      dataSource: string[];
+      hasLaterMessages?: boolean;
+      isSecondLastMessageFromUser: boolean;
+    }) => {
+      const { hasLaterMessages, ...props } = next;
       currentFixture = {
         ...currentFixture,
         displayMessages: deriveDisplayMessages(next.isSecondLastMessageFromUser),
+        hasLaterMessages: hasLaterMessages ?? currentFixture.hasLaterMessages,
       };
-      hook.rerender(next);
+      hook.rerender({ contextKey: undefined, ...props });
     };
 
     return { ...hook, rerender };
@@ -215,7 +225,7 @@ describe('useConversationScroll — pin behavior', () => {
 
   it('scrolls to the user message when a user+assistant pair is appended', () => {
     const { rerender } = renderScrollHook({
-      dataSource: [assistantId, 'prev'],
+      dataSource: ['m0', 'm1'],
       isSecondLastMessageFromUser: false,
     });
 
@@ -230,7 +240,7 @@ describe('useConversationScroll — pin behavior', () => {
 
   it('translates the pin target by headerOffset when a header slot row is present', () => {
     const { rerender } = renderScrollHook({
-      dataSource: [assistantId, 'prev'],
+      dataSource: ['m0', 'm1'],
       headerOffset: 1,
       isSecondLastMessageFromUser: false,
     });
@@ -243,6 +253,37 @@ describe('useConversationScroll — pin behavior', () => {
     // User message index 2 sits at virtua row 3 (header row 0 + messages).
     expect(scrollToIndex).toHaveBeenCalledTimes(1);
     expect(scrollToIndex).toHaveBeenCalledWith(3, { align: 'start', smooth: true });
+  });
+
+  it('does not scroll when a forward read appends its next page as a user+assistant pair', () => {
+    const { rerender } = renderScrollHook({
+      dataSource: ['m0', 'm1'],
+      fixture: { hasLaterMessages: true },
+      isSecondLastMessageFromUser: false,
+    });
+
+    // The last page lands: later rounds are no longer unread after it.
+    rerender({
+      dataSource: ['m0', 'm1', userId, assistantId],
+      hasLaterMessages: false,
+      isSecondLastMessageFromUser: true,
+    });
+
+    expect(scrollToIndex).not.toHaveBeenCalled();
+  });
+
+  it('does not scroll when an older round is prepended in front of the loaded rows', () => {
+    const { rerender } = renderScrollHook({
+      dataSource: [userId, assistantId],
+      isSecondLastMessageFromUser: true,
+    });
+
+    rerender({
+      dataSource: ['older-user', 'older-assistant', userId, assistantId],
+      isSecondLastMessageFromUser: true,
+    });
+
+    expect(scrollToIndex).not.toHaveBeenCalled();
   });
 
   it('does not scroll when only the assistant message is appended', () => {
@@ -290,6 +331,58 @@ describe('useConversationScroll — pin behavior', () => {
     expect(scrollToIndex).not.toHaveBeenCalled();
   });
 
+  it('does not treat a topic switch as a send even when the length delta is +2', () => {
+    const { rerender } = renderScrollHook({
+      contextKey: 'main_agt_1_tpc_a',
+      dataSource: ['m0', 'm1'],
+      isSecondLastMessageFromUser: false,
+    });
+
+    rerender({
+      contextKey: 'main_agt_1_tpc_b',
+      dataSource: ['m0', 'm1', userId, assistantId],
+      isSecondLastMessageFromUser: true,
+    });
+
+    expect(scrollToIndex).not.toHaveBeenCalled();
+  });
+
+  it('deactivates a live spacer when the context switches', async () => {
+    const { result, rerender } = renderScrollHook({
+      contextKey: 'main_agt_1_tpc_a',
+      dataSource: ['m0', 'm1'],
+      isSecondLastMessageFromUser: false,
+      fixture: {
+        virtuaScrollMethods: {
+          getItemOffset: (i: number) => i * 100,
+          getItemSize: () => 80,
+          getScrollOffset: () => 0,
+          getViewportSize: () => 800,
+        },
+      },
+    });
+
+    rerender({
+      contextKey: 'main_agt_1_tpc_a',
+      dataSource: ['m0', 'm1', userId, assistantId],
+      isSecondLastMessageFromUser: true,
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(50);
+    });
+
+    expect(result.current.spacerActive).toBe(true);
+
+    rerender({
+      contextKey: 'main_agt_1_tpc_b',
+      dataSource: ['x0', 'x1', 'x2'],
+      isSecondLastMessageFromUser: false,
+    });
+
+    expect(result.current.spacerActive).toBe(false);
+    expect(result.current.listData).toEqual(['x0', 'x1', 'x2']);
+  });
+
   it('does not throw or scroll when virtuaRef is not ready at send time', () => {
     virtuaRef.current = null;
 
@@ -310,7 +403,7 @@ describe('useConversationScroll — pin behavior', () => {
 
   it('stops pinning once the user scrolls up', () => {
     const { result, rerender } = renderScrollHook({
-      dataSource: [assistantId, 'prev'],
+      dataSource: ['m0', 'm1'],
       isSecondLastMessageFromUser: false,
     });
 
@@ -339,6 +432,55 @@ describe('useConversationScroll — pin behavior', () => {
     });
 
     expect(scrollToIndex).not.toHaveBeenCalled();
+  });
+
+  // Regression: the send scroll fires before the spacer row exists and gets
+  // clamped by virtua, so the visible slide is the settle re-pin after mount.
+  // An instant re-pin there aborts the animation (the "no slide" bug).
+  it('keeps settle re-pins smooth right after send', () => {
+    const { result, rerender } = renderScrollHook({
+      dataSource: ['m0', 'm1'],
+      isSecondLastMessageFromUser: false,
+    });
+
+    rerender({
+      dataSource: ['m0', 'm1', userId, assistantId],
+      isSecondLastMessageFromUser: true,
+    });
+    expect(scrollToIndex).toHaveBeenCalledWith(2, { align: 'start', smooth: true });
+    scrollToIndex.mockClear();
+
+    vi.advanceTimersByTime(100);
+    const spacerNode = document.createElement('div');
+    act(() => {
+      result.current.registerSpacerNode(spacerNode);
+    });
+
+    expect(scrollToIndex).toHaveBeenCalledWith(2, { align: 'start', smooth: true });
+  });
+
+  // Regression: settle re-pins fire while the content height is still changing
+  // (e.g. a workflow collapse at turn completion). A smooth scroll there is
+  // itself a visible slide, so late re-pins must land instantly.
+  it('re-pins without smooth scrolling once the send animation window has passed', () => {
+    const { result, rerender } = renderScrollHook({
+      dataSource: ['m0', 'm1'],
+      isSecondLastMessageFromUser: false,
+    });
+
+    rerender({
+      dataSource: ['m0', 'm1', userId, assistantId],
+      isSecondLastMessageFromUser: true,
+    });
+    scrollToIndex.mockClear();
+
+    vi.advanceTimersByTime(1000);
+    const spacerNode = document.createElement('div');
+    act(() => {
+      result.current.registerSpacerNode(spacerNode);
+    });
+
+    expect(scrollToIndex).toHaveBeenCalledWith(2, { align: 'start', smooth: false });
   });
 
   it('does not scroll on initial render', () => {
@@ -402,7 +544,7 @@ describe('useConversationScroll — pin behavior', () => {
 
     try {
       const { rerender } = renderScrollHook({
-        dataSource: [assistantId, 'prev'],
+        dataSource: ['m0', 'm1'],
         isSecondLastMessageFromUser: false,
       });
 

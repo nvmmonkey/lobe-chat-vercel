@@ -1,16 +1,19 @@
 import { AGENT_CHAT_TOPIC_URL, AGENT_CHAT_URL } from '@lobechat/const';
 import { useCallback, useMemo } from 'react';
-import { useParams } from 'react-router';
 import urlJoin from 'url-join';
 
 import { useActiveWorkspaceSlug } from '@/business/client/hooks/useActiveWorkspaceSlug';
+import { getProjectTopicPath } from '@/features/Projects/Layout/navigation';
 import { useFocusTopicPopup } from '@/features/TopicPopupGuard/useTopicPopupsRegistry';
+import { buildWorkspaceAwarePath } from '@/features/Workspace/workspaceAwarePath';
+import { useActiveLocation } from '@/hooks/useActiveLocation';
+import { useActiveRouteParams } from '@/hooks/useActiveRouteParams';
 import { useQueryRoute } from '@/hooks/useQueryRoute';
-import { usePathname } from '@/libs/router/navigation';
 import { useChatStore } from '@/store/chat';
 import { useGlobalStore } from '@/store/global';
 
 import { buildPrefixedAgentRoutePath, parseAgentPathname } from '../../utils/agentPathname';
+import { useTopicListScope } from '../TopicListScope';
 
 /**
  * Hook to handle topic navigation with automatic route detection
@@ -21,9 +24,10 @@ interface NavigateToTopicOptions {
 }
 
 export const useTopicNavigation = () => {
-  const pathname = usePathname();
+  const scope = useTopicListScope();
+  const { pathname } = useActiveLocation();
   const agentRoute = useMemo(() => parseAgentPathname(pathname), [pathname]);
-  const params = useParams<{ aid?: string; topicId?: string }>();
+  const params = useActiveRouteParams<{ aid?: string; topicId?: string }>();
   const [activeAgentId, activeTopicId] = useChatStore((s) => [s.activeAgentId, s.activeTopicId]);
   const router = useQueryRoute();
   const toggleConfig = useGlobalStore((s) => s.toggleMobileTopic);
@@ -59,6 +63,16 @@ export const useTopicNavigation = () => {
 
   const navigateToTopic = useCallback(
     async (topicId?: string, options?: NavigateToTopicOptions) => {
+      if (scope && topicId) {
+        router.push(
+          buildWorkspaceAwarePath(
+            getProjectTopicPath(scope.projectId, topicId),
+            activeWorkspaceSlug,
+          ),
+        );
+        toggleConfig(false);
+        return;
+      }
       if (!options?.skipPopupFocus) {
         await focusTopicPopup(topicId);
       }
@@ -80,6 +94,7 @@ export const useTopicNavigation = () => {
       toggleConfig(false);
     },
     [
+      scope,
       activeWorkspaceSlug,
       agentRoute,
       focusTopicPopup,
@@ -94,7 +109,7 @@ export const useTopicNavigation = () => {
   return {
     focusTopicPopup,
     isInAgentSubRoute: isInAgentSubRoute(),
-    isInTopicContextRoute: isInTopicContextRoute(),
+    isInTopicContextRoute: !!scope || isInTopicContextRoute(),
     navigateToTopic,
     routeTopicId,
     urlTopicId,

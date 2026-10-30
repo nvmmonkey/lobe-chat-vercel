@@ -1,13 +1,21 @@
 'use client';
 
-import { Flexbox, SearchBar, Text, TextArea } from '@lobehub/ui';
-import { Button, useModalContext } from '@lobehub/ui/base-ui';
-import { createStaticStyles, cssVar, cx } from 'antd-style';
+import {
+  Button,
+  createStaticStyles,
+  cssVar,
+  cx,
+  Flexbox,
+  SearchBar,
+  Text,
+  TextArea,
+  useModalContext,
+} from '@lobehub/ui';
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import AgentAvatar from '@/components/AgentAvatar';
 import { useFetchAgentList } from '@/hooks/useFetchAgentList';
-import AgentAvatar from '@/routes/(main)/home/_layout/Body/Agent/List/AgentItem/Avatar';
 import { useHomeStore } from '@/store/home';
 import { homeAgentListSelectors } from '@/store/home/selectors';
 
@@ -55,12 +63,14 @@ const styles = createStaticStyles(({ css }) => ({
 }));
 
 export interface TopicForwardContentProps {
+  cancelSourceContinuation?: boolean;
   sourceAgentId: string;
   topicId: string;
   topicTitle: string;
 }
 
 export const TopicForwardContent = ({
+  cancelSourceContinuation,
   sourceAgentId,
   topicId,
   topicTitle,
@@ -71,7 +81,11 @@ export const TopicForwardContent = ({
   const [note, setNote] = useState('');
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const agents = useHomeStore(homeAgentListSelectors.allAgents);
-  const forwardTopic = useForwardTopic({ agentId: sourceAgentId, topicId });
+  const forwardTopic = useForwardTopic({
+    agentId: sourceAgentId,
+    cancelSourceContinuation,
+    topicId,
+  });
 
   useFetchAgentList();
 
@@ -124,7 +138,11 @@ export const TopicForwardContent = ({
                   }
                 >
                   <AgentAvatar
+                    agentId={agent.id}
                     avatar={typeof agent.avatar === 'string' ? agent.avatar : undefined}
+                    background={agent.backgroundColor || undefined}
+                    name={agent.title || undefined}
+                    size={22}
                   />
                   <Text ellipsis style={{ flex: 1 }}>
                     {agent.title || t('untitledAgent')}
@@ -149,17 +167,30 @@ export const TopicForwardContent = ({
         </Flexbox>
         <TextArea
           autoSize={{ maxRows: 4, minRows: 2 }}
-          placeholder={t('messageForward.modal.notePlaceholder')}
           resize={false}
           value={note}
+          placeholder={t(
+            cancelSourceContinuation
+              ? 'messageForward.topic.handoff.notePlaceholder'
+              : 'messageForward.modal.notePlaceholder',
+          )}
           onChange={(event) => setNote(event.target.value)}
         />
         <Flexbox horizontal gap={8} justify={'flex-end'}>
           <Button onClick={close}>{t('messageForward.bar.cancel')}</Button>
           <Button disabled={selectedIds.length === 0} type={'primary'} onClick={handleForward}>
             {selectedIds.length > 0
-              ? t('messageForward.modal.sendCount', { count: selectedIds.length })
-              : t('messageForward.bar.forward')}
+              ? t(
+                  cancelSourceContinuation
+                    ? 'messageForward.topic.handoff.submitCount'
+                    : 'messageForward.modal.sendCount',
+                  { count: selectedIds.length },
+                )
+              : t(
+                  cancelSourceContinuation
+                    ? 'messageForward.topic.handoff.submit'
+                    : 'messageForward.bar.forward',
+                )}
           </Button>
         </Flexbox>
       </Flexbox>

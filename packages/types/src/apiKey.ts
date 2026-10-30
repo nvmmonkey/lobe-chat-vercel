@@ -16,6 +16,9 @@ export interface ApiKeyItem {
   keyDecryptionFailed?: boolean;
   lastUsedAt?: Date | null;
   name: string;
+  // Capability scopes. `null`/absent = full access (legacy keys), `['*']` =
+  // explicit full access, otherwise a restricted scope list.
+  scopes?: string[] | null;
   updatedAt: Date;
   userId: string;
 }
@@ -23,10 +26,22 @@ export interface ApiKeyItem {
 export interface CreateApiKeyParams {
   expiresAt?: Date | null;
   name: string;
+  scopes?: string[] | null;
 }
 
 export interface UpdateApiKeyParams {
   enabled?: boolean;
   expiresAt?: Date | null;
   name?: string;
+  scopes?: string[] | null;
 }
+
+export type WorkspaceApiKeyMemberCreation = 'admins_only' | 'all_members';
+
+/**
+ * Who may connect, re-authorize, sync or remove the workspace's shared
+ * connectors. Workspace owners and admins always can; `all_members` (the
+ * default) lets every member co-maintain them. Reading or rewriting another
+ * member's stored credentials stays with that creator and the workspace owner.
+ */
+export type WorkspaceConnectorMemberManage = 'admins_only' | 'all_members';

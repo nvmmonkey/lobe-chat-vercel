@@ -56,29 +56,6 @@ export class WorkspaceUserSettingsModel {
   };
 
   /**
-   * Record the caller's per-member folder assignment for a sidebar item.
-   * Creation flows call this when an item is created inside a folder in
-   * workspace mode: the shared `sessionGroupId` / `chat_groups.groupId`
-   * columns are ignored there, so without this entry a create-in-folder
-   * would land the new item in the ungrouped list.
-   */
-  setSidebarGroupAssignment = async (itemId: string, folderId: string | null) => {
-    await this.updatePreference({ sidebarGroupAssignments: { [itemId]: folderId } });
-  };
-
-  /**
-   * Copy the caller's folder assignment from a source item to its duplicate,
-   * so duplicating an item that sits in "my" folder keeps the copy there.
-   * No-op when the caller never assigned the source item.
-   */
-  copySidebarGroupAssignment = async (sourceItemId: string, targetItemId: string) => {
-    const preference = await this.getPreference();
-    const assignment = preference.sidebarGroupAssignments?.[sourceItemId];
-    if (assignment === undefined) return;
-    await this.updatePreference({ sidebarGroupAssignments: { [targetItemId]: assignment } });
-  };
-
-  /**
    * Merge `patch` on top of the caller's current preference and persist the
    * result via UPSERT. The merge is done at the application layer (read →
    * merge → write) because only the caller writes their own row, so the
@@ -91,7 +68,9 @@ export class WorkspaceUserSettingsModel {
    * in the patch is a no-op — pass an explicit `{}` to clear it).
    */
   updatePreference = async (patch: Partial<WorkspaceUserPreference>) => {
+    /* v8 ignore start -- unreachable: getPreference() already falls back to {}, never nullish */
     const current = (await this.getPreference()) ?? {};
+    /* v8 ignore stop */
     // Per-agent override maps merge one level deeper: clients patch a single
     // agent's leaf from a local copy that may be stale or empty (for example a
     // picker used before the preference fetch settles). A top-level replace
@@ -127,6 +106,20 @@ export class WorkspaceUserSettingsModel {
             },
           }
         : {}),
+      ...(patch.sidebarAgentVisibilityOverrides
+        ? {
+            sidebarAgentVisibilityOverrides: {
+              ...current.sidebarAgentVisibilityOverrides,
+              ...patch.sidebarAgentVisibilityOverrides,
+            },
+          }
+        : {}),
+      // Deprecated, but still merged: the fields stay on the API, so a client
+      // from before the shared-sidebar change can still patch a single item.
+      // A top-level replace would let one such write shred the rest of that
+      // user's saved map — which is exactly the data the deprecation promises
+      // to leave intact for a rollback. Drop these two once the fields leave
+      // `WorkspaceUserPreference`.
       ...(patch.sidebarGroupAssignments
         ? {
             sidebarGroupAssignments: {

@@ -20,6 +20,11 @@ const agentModelOverrideById =
     s.workspaceUserPreference.agentModelOverrides?.[agentId];
 
 const EMPTY_HIDDEN: string[] = [];
+const EMPTY_VISIBILITY_OVERRIDES: Record<string, boolean> = {};
+
+/** Explicit per-member workspace sidebar membership overrides. */
+const sidebarAgentVisibilityOverrides = (s: UserStore): Record<string, boolean> =>
+  s.workspaceUserPreference.sidebarAgentVisibilityOverrides ?? EMPTY_VISIBILITY_OVERRIDES;
 
 /**
  * Sidebar items the caller removed from their sidebar in the active
@@ -28,6 +33,13 @@ const EMPTY_HIDDEN: string[] = [];
  */
 const sidebarHiddenAgentIds = (s: UserStore): string[] =>
   s.workspaceUserPreference.sidebarHiddenAgentIds ?? EMPTY_HIDDEN;
+
+/**
+ * Folders (Categories) the caller hid from their sidebar in the active
+ * workspace. The folders themselves stay shared — this is the personal mask.
+ */
+const sidebarHiddenGroupIds = (s: UserStore): string[] =>
+  s.workspaceUserPreference.sidebarHiddenGroupIds ?? EMPTY_HIDDEN;
 
 /** Whether the caller removed this item from their sidebar (default is listed). */
 const isAgentHiddenFromSidebar =
@@ -38,6 +50,20 @@ const isAgentHiddenFromSidebar =
 /** Per-member sidebar sections layout for the active workspace. */
 const sidebarLayout = (s: UserStore) => s.workspaceUserPreference.sidebar;
 
+/**
+ * Whether topic sidebars list only the caller's own topics in `workspaceId`
+ * (the active one). The loaded bucket can still belong to the previous
+ * workspace right after a switch — back to personal mode included — so it only
+ * counts when it was loaded for this workspace. Always false in personal mode,
+ * where every topic is the caller's.
+ */
+const topicOnlyMine =
+  (workspaceId: string | null) =>
+  (s: UserStore): boolean =>
+    !!workspaceId &&
+    s.workspaceUserPreferenceWorkspaceId === workspaceId &&
+    !!s.workspaceUserPreference.topicOnlyMine;
+
 /** The workspace whose preference row is currently loaded (null = not yet fetched). */
 const preferenceWorkspaceId = (s: UserStore) => s.workspaceUserPreferenceWorkspaceId;
 
@@ -46,6 +72,9 @@ export const workspaceUserSettingsSelectors = {
   agentModelOverrideById,
   isAgentHiddenFromSidebar,
   preferenceWorkspaceId,
+  sidebarAgentVisibilityOverrides,
   sidebarHiddenAgentIds,
+  sidebarHiddenGroupIds,
   sidebarLayout,
+  topicOnlyMine,
 };

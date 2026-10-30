@@ -1,6 +1,6 @@
 'use client';
 
-import { createStaticStyles, cssVar } from 'antd-style';
+import { createStaticStyles, cssVar } from '@lobehub/ui';
 import type { LucideIcon } from 'lucide-react';
 import { memo } from 'react';
 
@@ -13,16 +13,18 @@ export const barButtonStyles = createStaticStyles(({ css }) => ({
     cursor: pointer;
 
     display: inline-flex;
+    flex-shrink: 0;
     gap: 4px;
     align-items: center;
 
     height: 20px;
-    padding-inline: 6px;
+    padding-inline: 4px;
     border: none;
     border-radius: 4px;
 
     font-size: 11px;
     color: ${cssVar.colorTextSecondary};
+    white-space: nowrap;
 
     background: transparent;
 
@@ -37,10 +39,11 @@ interface BarButtonProps {
   icon: LucideIcon;
   label: string;
   onClick: () => void;
+  title?: string;
 }
 
-const BarButton = memo<BarButtonProps>(({ icon: Icon, label, onClick }) => (
-  <button className={barButtonStyles.button} type={'button'} onClick={onClick}>
+const BarButton = memo<BarButtonProps>(({ icon: Icon, label, onClick, title }) => (
+  <button className={barButtonStyles.button} title={title} type={'button'} onClick={onClick}>
     <Icon size={11} />
     <span>{label}</span>
   </button>

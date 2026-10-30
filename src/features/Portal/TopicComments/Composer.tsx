@@ -1,6 +1,5 @@
 import { ChatInput, ChatInputActionBar, SendButton } from '@lobehub/editor/react';
-import { Flexbox } from '@lobehub/ui';
-import { App } from 'antd';
+import { Flexbox, toast } from '@lobehub/ui';
 import { memo, useCallback, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -29,7 +28,7 @@ interface ComposerProps {
 const Composer = memo<ComposerProps>(
   ({ messageId, onCreated, parentCommentId, rootReplyCount, topicId }) => {
     const { t } = useTranslation('chat');
-    const { message } = App.useApp();
+
     const workspaceId = useActiveWorkspaceId();
     const { canUseResource } = useActiveConversationResourceAccess();
     const key = workspaceId
@@ -46,8 +45,8 @@ const Composer = memo<ComposerProps>(
     const editorRef = useRef<TopicCommentEditorRef>(null);
     const content = draft?.content ?? '';
     const onError = useCallback(() => {
-      message.error(t('topicComment.createFailed'));
-    }, [message, t]);
+      toast.error(t('topicComment.createFailed'));
+    }, [t]);
     const { onPressEnter, submit, submitting } = useComposerSubmit({
       clearDraft,
       content,

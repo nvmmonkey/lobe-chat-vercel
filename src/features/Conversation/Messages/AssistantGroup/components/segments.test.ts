@@ -2,7 +2,12 @@ import { describe, expect, it } from 'vitest';
 
 import { LOADING_FLAT } from '@/const/message';
 
-import { countFoldedProcessSteps, hasRenderableFinalAnswer, shouldFoldProcess } from './segments';
+import {
+  countAssistantLlmCalls,
+  hasRenderableFinalAnswer,
+  resolveWorkflowExpandLevel,
+  shouldFoldProcess,
+} from './segments';
 
 const a = (id: string, content = 'answer') => ({
   block: { content, id } as any,
@@ -15,17 +20,17 @@ const w = (id: string, toolCount = 0) => ({
   kind: 'workflow' as const,
 });
 
-describe('countFoldedProcessSteps', () => {
-  it('counts folded assistant blocks and tool calls', () => {
+describe('countAssistantLlmCalls', () => {
+  it('counts assistant blocks without counting tool calls', () => {
     const segments = [w('b1', 2), a('b2'), w('b3', 1)];
 
-    expect(countFoldedProcessSteps(segments)).toBe(6);
+    expect(countAssistantLlmCalls(segments)).toBe(3);
   });
 
   it('does not double-count a mixed block split into answer and workflow segments', () => {
     const segments = [a('mixed-block'), w('mixed-block', 2), w('next-block', 1)];
 
-    expect(countFoldedProcessSteps(segments)).toBe(5);
+    expect(countAssistantLlmCalls(segments)).toBe(2);
   });
 });
 
@@ -49,7 +54,61 @@ describe('hasRenderableFinalAnswer', () => {
 });
 
 describe('shouldFoldProcess', () => {
+  it.each([undefined, { images: [{ url: 'https://x/image.png' }] }])(
+    'keeps Codex image outputs visible, including upload failures',
+    (state) => {
+      const output = {
+        id: 'image',
+        apiName: 'image_output',
+        identifier: 'codex',
+        result: { state },
+      };
+      expect(
+        shouldFoldProcess({
+          enabled: true,
+          hasFinalAnswer: true,
+          isGenerating: false,
+          isLatestItem: true,
+          operationEnded: true,
+          processSegments: [
+            w('commands', 2),
+            {
+              kind: 'workflow',
+              blocks: [{ id: 'image', tools: [output] } as any],
+              standalone: true,
+            },
+          ],
+        }),
+      ).toBe(false);
+    },
+  );
   const proc = [w('t1')];
+
+  it('folds a finished turn whose process only READ an image', () => {
+    const readImage = {
+      apiName: 'Read',
+      id: 'read-image',
+      identifier: 'claude-code',
+      result: { content: 'ok', id: 'r', state: { images: [{ url: 'https://x/a.png' }] } },
+    };
+    expect(
+      shouldFoldProcess({
+        enabled: true,
+        hasFinalAnswer: true,
+        isGenerating: false,
+        isLatestItem: true,
+        operationEnded: true,
+        processSegments: [
+          w('commands', 2),
+          {
+            kind: 'workflow',
+            blocks: [{ id: 'read-image', tools: [readImage] } as any],
+            standalone: true,
+          },
+        ],
+      }),
+    ).toBe(true);
+  });
 
   it('folds a finished, non-latest turn that has a workflow when enabled', () => {
     expect(
@@ -135,5 +194,31 @@ describe('shouldFoldProcess', () => {
         processSegments: [a('p1')],
       }),
     ).toBe(false);
+  });
+});
+
+describe('resolveWorkflowExpandLevel', () => {
+  it('uses the setting when no override is given', () => {
+    expect(resolveWorkflowExpandLevel(undefined, 'collapsed')).toEqual({ streaming: 'collapsed' });
+  });
+
+  it('lets an explicit streaming override win over the setting', () => {
+    expect(resolveWorkflowExpandLevel({ streaming: 'full' }, 'collapsed')).toEqual({
+      streaming: 'full',
+    });
+  });
+
+  it('expands a string override into both phases and still wins', () => {
+    expect(resolveWorkflowExpandLevel('full', 'collapsed')).toEqual({
+      completion: 'full',
+      streaming: 'full',
+    });
+  });
+
+  it('keeps a completion-only override and fills streaming from the setting', () => {
+    expect(resolveWorkflowExpandLevel({ completion: 'full' }, 'semi')).toEqual({
+      completion: 'full',
+      streaming: 'semi',
+    });
   });
 });

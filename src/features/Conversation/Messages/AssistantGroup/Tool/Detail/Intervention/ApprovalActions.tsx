@@ -1,20 +1,34 @@
-import { Flexbox } from '@lobehub/ui';
-import { Button } from '@lobehub/ui/base-ui';
-import { createStaticStyles, cx } from 'antd-style';
-import { CornerDownLeft } from 'lucide-react';
+import { registerPendingHotkeyCard } from '@lobechat/shared-tool-ui/pending-hotkeys';
+import type { BuiltinRememberApproval } from '@lobechat/types';
+import { Button, createStaticStyles, cx, Flexbox } from '@lobehub/ui';
+import { CircleStop, CornerDownLeft } from 'lucide-react';
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import { useUserStore } from '@/store/user';
+import { useToolStore } from '@/store/tool';
+import { toolSelectors } from '@/store/tool/selectors';
 
 import { useConversationResourceAccess } from '../../../../../hooks/useConversationResourceAccess';
 import { useConversationStore } from '../../../../../store';
+import {
+  type ApprovalChoice,
+  canRememberViaAllowList,
+  getApprovalChoices,
+  isChoiceSubmitBlocked,
+  resolveRememberAction,
+} from './approvalGate';
 import { type ApprovalMode } from './index';
+import { isSubmitShortcutBlockedByTarget } from './submitShortcutGuard';
 
 interface ApprovalActionsProps {
   apiName: string;
   approvalMode: ApprovalMode;
+  /**
+   * Hold the approve choices: the intervention cannot show what is being
+   * approved yet (see `onApprovalBlockedChange`). Reject and stop stay enabled.
+   */
+  approveDisabled?: boolean;
   assistantGroupId?: string;
   identifier: string;
   messageId: string;
@@ -22,11 +36,16 @@ interface ApprovalActionsProps {
    * Callback to be called before approve action
    * Used to flush pending saves (e.g., debounced saves) from intervention components
    */
-  onBeforeApprove?: () => void | Promise<void>;
+  onBeforeApprove?: () =>
+    Promise<Record<string, unknown> | undefined> | Record<string, unknown> | undefined;
+  /** The tool's own "approve and remember" step, when its intervention defines "similar". */
+  rememberOption?: BuiltinRememberApproval;
+  /** The call's arguments: a call that must always ask cannot be remembered. */
+  toolArgs?: Record<string, unknown>;
   toolCallId: string;
 }
 
-type Choice = 'approve' | 'approve-remember' | 'reject';
+type Choice = ApprovalChoice;
 
 const styles = createStaticStyles(({ css, cssVar }) => ({
   container: css`
@@ -34,7 +53,10 @@ const styles = createStaticStyles(({ css, cssVar }) => ({
   `,
   footer: css`
     display: flex;
+    gap: 8px;
+    align-items: center;
     justify-content: flex-end;
+
     margin-block-start: 8px;
   `,
   number: css`
@@ -126,7 +148,17 @@ const styles = createStaticStyles(({ css, cssVar }) => ({
 }));
 
 const ApprovalActions = memo<ApprovalActionsProps>(
-  ({ approvalMode, apiName, assistantGroupId, identifier, messageId, onBeforeApprove }) => {
+  ({
+    approvalMode,
+    approveDisabled,
+    apiName,
+    assistantGroupId,
+    identifier,
+    messageId,
+    onBeforeApprove,
+    rememberOption,
+    toolArgs,
+  }) => {
     const { t } = useTranslation('chat');
     const [choice, setChoice] = useState<Choice>('approve');
     const [reason, setReason] = useState('');
@@ -134,56 +166,110 @@ const ApprovalActions = memo<ApprovalActionsProps>(
     const rejectInputRef = useRef<HTMLInputElement>(null);
 
     const isMessageCreating = messageId.startsWith('tmp_');
-    const isAllowListMode = approvalMode === 'allow-list';
     // Workspace topics are shared: a view-only member can be LOOKING at a
     // teammate's running conversation — they must not drive its tool approvals.
     const { canUseResource } = useConversationResourceAccess();
 
-    // Ordered choices drive both the numbered rows and the 1/2/3 shortcuts.
-    // "Approve & don't ask again" is a first-class option (allow-list only)
-    // rather than a checkbox nested under approve.
-    const choices = useMemo<Choice[]>(
-      () => (isAllowListMode ? ['approve', 'approve-remember', 'reject'] : ['approve', 'reject']),
-      [isAllowListMode],
+    // "Approve, and don't ask again for similar actions" is one shared choice
+    // for every tool. A tool may define "similar" itself (its own remember
+    // step); otherwise the tool joins the allow-list, which only helps when
+    // this call is not one that must always ask.
+    const interventionConfig = useToolStore(
+      (s) =>
+        toolSelectors
+          .getManifestById(identifier)(s)
+          ?.api?.find((api) => api.name === apiName)?.humanIntervention,
     );
+    const allowListRememberable = useMemo(
+      () => canRememberViaAllowList({ config: interventionConfig, toolArgs }),
+      [interventionConfig, toolArgs],
+    );
+    const hasToolRemember = !!rememberOption;
+    // Ordered choices drive both the numbered rows and the 1/2/3 shortcuts.
+    const choices = useMemo<Choice[]>(
+      () =>
+        getApprovalChoices({
+          allowListRememberable,
+          approvalMode,
+          toolRemember: hasToolRemember,
+        }),
+      [allowListRememberable, approvalMode, hasToolRemember],
+    );
+    // A tool's choice can be withdrawn while the card is open; fall back to plain approve.
+    const effectiveChoice: Choice = choices.includes(choice) ? choice : 'approve';
+    const rememberAction = resolveRememberAction({ toolRemember: hasToolRemember });
 
-    const [approveToolCall, rejectAndContinueToolCall] = useConversationStore((s) => [
-      s.approveToolCall,
-      s.rejectAndContinueToolCall,
+    const [approveToolCall, rejectAndContinueToolCall, stopPendingApprovalForCard] =
+      useConversationStore((s) => [
+        s.approveToolCall,
+        s.rejectAndContinueToolCall,
+        s.stopPendingApprovalForCard,
+      ]);
+    const [stopping, setStopping] = useState(false);
+
+    /**
+     * "Stop here — don't continue." Sits beside Submit because it answers the
+     * same question the card is asking; splitting the two across the bar makes
+     * the user hunt for the one they want.
+     *
+     * Not a rejection: rejecting writes a reason and lets the model respond,
+     * stopping ends the turn outright and executes nothing.
+     */
+    const handleStop = useCallback(async () => {
+      if (stopping || loading || isMessageCreating || !canUseResource) return;
+      setStopping(true);
+      try {
+        await stopPendingApprovalForCard(messageId);
+      } finally {
+        setStopping(false);
+      }
+    }, [
+      stopping,
+      loading,
+      isMessageCreating,
+      canUseResource,
+      stopPendingApprovalForCard,
+      messageId,
     ]);
-    const addToolToAllowList = useUserStore((s) => s.addToolToAllowList);
-
+    const submitBlocked = isChoiceSubmitBlocked(effectiveChoice, approveDisabled);
     const handleSubmit = useCallback(async () => {
-      if (loading || isMessageCreating || !canUseResource) return;
+      if (loading || isMessageCreating || !canUseResource || submitBlocked) return;
       setLoading(true);
       try {
-        if (choice === 'reject') {
+        if (effectiveChoice === 'reject') {
           await rejectAndContinueToolCall(messageId, reason.trim() || undefined);
         } else {
-          if (onBeforeApprove) await onBeforeApprove();
-          await approveToolCall(messageId, assistantGroupId ?? '');
-          if (isAllowListMode && choice === 'approve-remember') {
-            await addToolToAllowList(`${identifier}/${apiName}`);
-          }
+          const remember = effectiveChoice === 'approve-remember';
+          // The tool's own remember step runs first, so the very next call
+          // after this approval already sees it.
+          if (remember && rememberAction === 'tool') await rememberOption?.onRemember();
+          const editedArguments = await onBeforeApprove?.();
+          await approveToolCall(messageId, assistantGroupId ?? '', {
+            editedArguments,
+            ...(remember && rememberAction === 'allow-list'
+              ? { rememberToolKey: `${identifier}/${apiName}` }
+              : {}),
+          });
         }
       } finally {
         setLoading(false);
       }
     }, [
-      addToolToAllowList,
       apiName,
       approveToolCall,
       assistantGroupId,
       canUseResource,
-      choice,
+      effectiveChoice,
       identifier,
-      isAllowListMode,
       isMessageCreating,
       loading,
       messageId,
       onBeforeApprove,
       reason,
       rejectAndContinueToolCall,
+      rememberAction,
+      rememberOption,
+      submitBlocked,
     ]);
 
     // When choice flips to reject (via click on row, '2', or arrow), pull focus
@@ -194,17 +280,20 @@ const ApprovalActions = memo<ApprovalActionsProps>(
       }
     }, [choice]);
 
-    // Window-level keyboard: 1/2/↑/↓ to switch, Enter to submit. Skip while
-    // typing anywhere on the page so we never hijack the main chat composer.
+    // Page-level keyboard: 1/2/↑/↓ to switch, Enter to submit. Skip while
+    // typing anywhere on the page so we never hijack the main chat composer,
+    // and skip when another interactive control has focus — Enter must
+    // activate that control, never silently submit an approval.
     // The reject input has its own onKeyDown for Enter / ↑.
+    //
+    // Kept fresh in a ref so the shared-arbiter registration below stays
+    // mount-stable while the handler always sees current state.
+    const containerRef = useRef<HTMLDivElement>(null);
+    const onKeyDownRef = useRef<(e: KeyboardEvent) => void>(() => {});
     useEffect(() => {
-      if (!canUseResource) return;
-      const handler = (e: KeyboardEvent) => {
-        const target = e.target as HTMLElement | null;
-        if (target) {
-          const tag = target.tagName;
-          if (tag === 'INPUT' || tag === 'TEXTAREA' || target.isContentEditable) return;
-        }
+      onKeyDownRef.current = (e: KeyboardEvent) => {
+        if (e.defaultPrevented) return;
+        if (isSubmitShortcutBlockedByTarget(e.target as HTMLElement | null)) return;
         if (e.metaKey || e.ctrlKey || e.altKey) return;
         // Digit keys select the matching numbered row directly.
         if (/^[1-9]$/.test(e.key)) {
@@ -236,11 +325,27 @@ const ApprovalActions = memo<ApprovalActionsProps>(
           // No default
         }
       };
-      window.addEventListener('keydown', handler);
-      return () => {
-        window.removeEventListener('keydown', handler);
-      };
-    }, [canUseResource, choices, handleSubmit]);
+    }, [choices, handleSubmit]);
+
+    // One registration per mount: the shared arbiter dispatches each keypress
+    // to exactly one pending card (containment first, then newest
+    // registration), so this card and a coexisting AskUserQuestion card (e.g.
+    // in the global approval notification) never race on the same keystroke.
+    useEffect(() => {
+      if (!canUseResource) return;
+      return registerPendingHotkeyCard({
+        // The footer may be portaled away from the intervention body, so
+        // containment covers the whole owning surface (marked with
+        // `data-pending-hotkey-scope`: InterventionBar / global approval
+        // card), falling back to the footer itself when rendered inline.
+        contains: (node) => {
+          const el = containerRef.current;
+          if (!el) return false;
+          return (el.closest('[data-pending-hotkey-scope]') ?? el).contains(node);
+        },
+        onKeyDown: (e) => onKeyDownRef.current(e),
+      });
+    }, [canUseResource]);
 
     const handleRejectInputKeyDown = (e: ReactKeyboardEvent<HTMLInputElement>) => {
       if (e.metaKey || e.ctrlKey || e.altKey) return;
@@ -268,7 +373,7 @@ const ApprovalActions = memo<ApprovalActionsProps>(
     if (!canUseResource) return null;
 
     return (
-      <Flexbox className={styles.container}>
+      <Flexbox className={styles.container} ref={containerRef}>
         <div className={styles.optionList} role="radiogroup">
           {choices.map((c, index) => {
             if (c === 'reject') {
@@ -303,8 +408,9 @@ const ApprovalActions = memo<ApprovalActionsProps>(
 
             return (
               <div
-                aria-checked={choice === c}
-                className={cx(styles.option, choice === c && styles.optionSelected)}
+                aria-checked={effectiveChoice === c}
+                aria-disabled={approveDisabled || undefined}
+                className={cx(styles.option, effectiveChoice === c && styles.optionSelected)}
                 key={c}
                 role="radio"
                 onClick={() => setChoice(c)}
@@ -318,8 +424,18 @@ const ApprovalActions = memo<ApprovalActionsProps>(
 
         <div className={styles.footer}>
           <Button
+            disabled={loading || isMessageCreating}
+            icon={CircleStop}
+            loading={stopping}
+            size={'middle'}
+            type={'text'}
+            onClick={handleStop}
+          >
+            {t('tool.intervention.stop')}
+          </Button>
+          <Button
             className={styles.submitButton}
-            disabled={isMessageCreating}
+            disabled={isMessageCreating || submitBlocked}
             loading={loading}
             size={'middle'}
             type={'primary'}

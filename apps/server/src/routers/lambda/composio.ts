@@ -1,3 +1,5 @@
+import { createGmailConnectorClient, hasGmailReadPermission } from '@lobechat/connector-data/gmail';
+import { getComposioAppByIdentifier } from '@lobechat/const';
 import type { LobeChatDatabase } from '@lobechat/database';
 import { type ToolManifest } from '@lobechat/types';
 import { TRPCError } from '@trpc/server';
@@ -23,7 +25,7 @@ import { inferCrudType } from '@/libs/mcp/utils';
 import { router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
 
-import { assertWorkspaceRowManageable } from './_helpers/assertWorkspaceRowManageable';
+import { assertConnectorMaintainable } from './_helpers/connectorManagePolicy';
 
 const composioProcedure = wsCompatProcedure.use(serverDatabase).use(async (opts) => {
   const { ctx } = opts;
@@ -47,22 +49,22 @@ const composioProcedure = wsCompatProcedure.use(serverDatabase).use(async (opts)
 });
 
 // Writes: in a workspace, require at least the member role (blocks viewers).
-// Personal mode passes through. Row-level creator/owner enforcement is layered
-// on top per-mutation via `assertComposioRowManageable` (mirrors the native
-// connector router's connectorWriteProcedure + assertWorkspaceRowManageable).
+// Personal mode passes through. The workspace connector policy is layered on
+// top per-mutation via `assertComposioRowManageable` (mirrors the native
+// connector router's connectorWriteProcedure + assertConnectorMaintainable).
 const composioWriteProcedure = composioProcedure.use(requireWorkspaceRoleWhenScoped('member'));
 
 /**
- * Before mutating (overwriting/deleting) a Composio connection in a workspace,
- * assert the caller may manage the existing row: creator or workspace owner.
- * `buildWorkspaceWhere` makes workspace rows writable workspace-wide, so without
- * this any member could overwrite/remove another member's connection by
- * identifier/agentId. Checked BEFORE any external side effect (Composio account
- * link/delete). No-op in personal mode.
+ * Before connecting, re-authorizing or removing a Composio connection in a
+ * workspace, assert the caller may maintain it under the workspace connector
+ * policy (members co-maintain shared rows unless an admin restricted it;
+ * agent-scoped rows keep the creator-or-owner rule). Checked BEFORE any
+ * external side effect (Composio account link/delete). No-op in personal mode.
  */
 async function assertComposioRowManageable(
   ctx: {
     connectorModel: ConnectorModel;
+    serverDB: LobeChatDatabase;
     userId: string;
     workspaceId?: string | null;
     workspaceRole?: string;
@@ -72,13 +74,29 @@ async function assertComposioRowManageable(
 ): Promise<void> {
   if (!ctx.workspaceId) return;
   const existing = await ctx.connectorModel.findScopedByIdentifier(identifier, agentId);
-  if (existing) assertWorkspaceRowManageable(ctx, existing.userId, 'connector');
+  await assertConnectorMaintainable(ctx, { agentId, userId: existing?.userId });
 }
 
 type ComposioToolInput = {
   description?: string;
   inputSchema?: Record<string, unknown>;
   name: string;
+};
+
+/**
+ * Rejects connector identities that are not an exact member of the supported Composio catalog.
+ *
+ * This validates both fields so an unsupported toolkit cannot be smuggled through a supported
+ * identifier before an external account is created or local connector state is written.
+ */
+const assertSupportedComposioApp = (identifier: string, appSlug: string): void => {
+  const app = getComposioAppByIdentifier(identifier);
+  if (app?.appSlug.toLowerCase() === appSlug.toLowerCase()) return;
+
+  throw new TRPCError({
+    code: 'BAD_REQUEST',
+    message: `Unsupported Composio app: ${identifier}`,
+  });
 };
 
 /**
@@ -218,6 +236,8 @@ export const composioRouter = router({
     .mutation(async ({ input, ctx }) => {
       const { appSlug, identifier, label, agentId } = input;
       const { userId } = ctx;
+
+      assertSupportedComposioApp(identifier, appSlug);
 
       if (agentId)
         await assertCanEditAgent(ctx.serverDB, userId, agentId, ctx.workspaceId ?? undefined);
@@ -395,11 +415,32 @@ export const composioRouter = router({
         const account = await (ctx.composioClient.connectedAccounts as any).get(
           input.connectedAccountId,
         );
+        const appSlug = account?.toolkit?.slug || '';
+        const status = (account?.status || 'PENDING') as string;
+        let gmailReadPermission: boolean | undefined;
+
+        if (appSlug.toLowerCase() === 'gmail' && status === 'ACTIVE') {
+          try {
+            const gmailClient = createGmailConnectorClient({
+              composio: ctx.composioClient,
+              connectedAccountId: input.connectedAccountId,
+              userId: ctx.userId,
+            });
+            const gmailAccount = await gmailClient.getAccount();
+            gmailReadPermission = hasGmailReadPermission(gmailAccount.scopes);
+          } catch (error) {
+            // Permission introspection is advisory: a transient Composio lookup failure must not
+            // downgrade an otherwise active connection or trap the OAuth polling loop.
+            console.warn('[Composio] Failed to inspect Gmail permissions:', error);
+          }
+        }
+
         return {
-          appSlug: account?.toolkit?.slug || '',
+          appSlug,
           connectedAccountId: input.connectedAccountId,
           error: undefined as 'AUTH_ERROR' | undefined,
-          status: (account?.status || 'PENDING') as string,
+          gmailReadPermission,
+          status,
         };
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
@@ -459,6 +500,8 @@ export const composioRouter = router({
         redirectUrl,
         agentId,
       } = input;
+
+      assertSupportedComposioApp(identifier, appSlug);
 
       if (agentId)
         await assertCanEditAgent(ctx.serverDB, ctx.userId, agentId, ctx.workspaceId ?? undefined);

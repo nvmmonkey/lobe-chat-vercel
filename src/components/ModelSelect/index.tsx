@@ -1,9 +1,17 @@
 import { type ChatModelCard } from '@lobechat/types';
 import { type IconAvatarProps } from '@lobehub/icons';
-import { LobeHub, ModelIcon, ProviderIcon } from '@lobehub/icons';
+import { LobeHub } from '@lobehub/icons';
 import { type FlexboxProps } from '@lobehub/ui';
-import { Avatar, Flexbox, Icon, Tag, Text, Tooltip } from '@lobehub/ui';
-import { createStaticStyles, useResponsive } from 'antd-style';
+import {
+  Avatar,
+  createStaticStyles,
+  Flexbox,
+  Icon,
+  Tag,
+  Text,
+  Tooltip,
+  useResponsive,
+} from '@lobehub/ui';
 import {
   AudioLines,
   Infinity as InfinityIcon,
@@ -15,14 +23,16 @@ import {
 } from 'lucide-react';
 import { type ModelAbilities } from 'model-bank';
 import numeral from 'numeral';
-import { type CSSProperties, type FC } from 'react';
+import { type CSSProperties, type FC, type ReactNode } from 'react';
 import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { ModelIcon, ProviderIcon } from '@/components/LobeIcons';
 import { type AiProviderSourceType } from '@/types/aiProvider';
 import { formatTokenNumber } from '@/utils/format';
 
 import NewModelBadgeI18n, { NewModelBadge as NewModelBadgeCore } from './NewModelBadge';
+import RoutingBadge from './RoutingBadge';
 
 export const TAG_CLASSNAME = 'lobe-model-info-tags';
 
@@ -246,10 +256,19 @@ export const ModelInfoTags = memo<ModelInfoTagsProps>(
   },
 );
 
-interface ModelItemRenderProps extends ChatModelCard, Partial<Omit<FlexboxProps, 'id' | 'title'>> {
+interface ModelItemRenderProps extends ChatModelCard, Pick<FlexboxProps, 'className' | 'style'> {
   abilities?: ModelAbilities;
+  audio?: boolean;
+  /** Replaces the default ability tags on the right side of the row */
+  extra?: ReactNode;
+  /** Inline marker after the name (and secondary text), e.g. an image-output icon */
+  nameSuffix?: ReactNode;
   newBadgeLabel?: string;
   proBadgeLabel?: string;
+  /** The provider the row belongs to, which some markers read the id against */
+  provider?: string;
+  /** Muted text right after the model name, e.g. the current reasoning effort */
+  secondaryText?: string;
   showInfoTag?: boolean;
 }
 
@@ -257,18 +276,24 @@ export const ModelItemRender = memo<ModelItemRenderProps>(
   ({
     showInfoTag = true,
     abilities,
+    audio,
     contextWindowTokens,
+    extra,
     files,
     functionCall,
     imageOutput,
+    nameSuffix,
     newBadgeLabel,
     proBadgeLabel,
+    provider,
+    secondaryText,
     video,
     vision,
     id,
     displayName,
     releasedAt,
-    ...rest
+    className,
+    style,
   }) => {
     const { mobile } = useResponsive();
     const displayNameOrId = displayName || id;
@@ -277,14 +302,14 @@ export const ModelItemRender = memo<ModelItemRenderProps>(
       <Flexbox
         horizontal
         align={'center'}
+        className={className}
         gap={32}
         justify={'space-between'}
-        {...rest}
         style={{
           overflow: 'hidden',
           position: 'relative',
           width: '100%',
-          ...rest.style,
+          ...style,
         }}
       >
         <Flexbox
@@ -303,6 +328,13 @@ export const ModelItemRender = memo<ModelItemRenderProps>(
           >
             {displayNameOrId}
           </Text>
+          {secondaryText && (
+            <Text style={{ flex: 'none' }} type={'secondary'}>
+              {secondaryText}
+            </Text>
+          )}
+          {nameSuffix}
+          <RoutingBadge id={id} provider={provider} />
           {newBadgeLabel ? (
             <NewModelBadgeCore label={newBadgeLabel} releasedAt={releasedAt} />
           ) : (
@@ -314,17 +346,19 @@ export const ModelItemRender = memo<ModelItemRenderProps>(
             </Tag>
           )}
         </Flexbox>
-        {showInfoTag && (
-          <ModelInfoTags
-            contextWindowTokens={contextWindowTokens}
-            files={files ?? abilities?.files}
-            functionCall={functionCall ?? abilities?.functionCall}
-            imageOutput={imageOutput ?? abilities?.imageOutput}
-            style={{ zoom: 0.9 }}
-            video={video ?? abilities?.video}
-            vision={vision ?? abilities?.vision}
-          />
-        )}
+        {extra ??
+          (showInfoTag && (
+            <ModelInfoTags
+              audio={audio ?? abilities?.audio}
+              contextWindowTokens={contextWindowTokens}
+              files={files ?? abilities?.files}
+              functionCall={functionCall ?? abilities?.functionCall}
+              imageOutput={imageOutput ?? abilities?.imageOutput}
+              style={{ zoom: 0.9 }}
+              video={video ?? abilities?.video}
+              vision={vision ?? abilities?.vision}
+            />
+          ))}
       </Flexbox>
     );
   },

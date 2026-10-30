@@ -2,13 +2,14 @@ import type { AssistantGroupSegment } from '@lobechat/conversation-flow';
 
 import { LOADING_FLAT } from '@/const/message';
 
+import { isImageOutputTool } from '../toolRenderRules';
 import type { RenderableAssistantContentBlock } from './types';
+import type { WorkflowExpandLevel, WorkflowExpandLevelDefault } from './WorkflowCollapse';
 
 export type GroupRenderSegment = AssistantGroupSegment<RenderableAssistantContentBlock>;
 
-export const countFoldedProcessSteps = (segments: GroupRenderSegment[]): number => {
+export const countAssistantLlmCalls = (segments: GroupRenderSegment[]): number => {
   const assistantBlockIds = new Set<string>();
-  let toolCount = 0;
 
   for (const segment of segments) {
     if (segment.kind === 'answer') {
@@ -18,11 +19,10 @@ export const countFoldedProcessSteps = (segments: GroupRenderSegment[]): number 
 
     for (const block of segment.blocks) {
       assistantBlockIds.add(block.id);
-      toolCount += block.tools?.length ?? 0;
     }
   }
 
-  return assistantBlockIds.size + toolCount;
+  return assistantBlockIds.size;
 };
 
 export const hasRenderableFinalAnswer = (segments: GroupRenderSegment[]): boolean =>
@@ -46,6 +46,11 @@ export const hasRenderableFinalAnswer = (segments: GroupRenderSegment[]): boolea
  * the message is not generating. The latest turn is eligible only once its final
  * answer is visible, so a tool-only latest turn does not collapse into a lone
  * header.
+ *
+ * A turn whose process carries a PRODUCED image never folds — that image is the
+ * deliverable. A tool that merely READ an image no longer blocks folding: the
+ * read is one ordinary step, and it surfaces (with its preview) once the fold is
+ * expanded instead of holding the whole process open.
  */
 export const shouldFoldProcess = ({
   enabled,
@@ -66,4 +71,24 @@ export const shouldFoldProcess = ({
   operationEnded &&
   (!isLatestItem || !!hasFinalAnswer) &&
   !isGenerating &&
-  processSegments.some((segment) => segment.kind === 'workflow');
+  processSegments.some((segment) => segment.kind === 'workflow') &&
+  !processSegments.some((segment) =>
+    (segment.kind === 'answer' ? [segment.block] : segment.blocks).some((block) =>
+      block.tools?.some(isImageOutputTool),
+    ),
+  );
+
+/**
+ * Merge the per-surface expand override with the user's streaming preference.
+ * An explicit override always wins; the setting only fills a streaming phase
+ * nobody asked for.
+ */
+export const resolveWorkflowExpandLevel = (
+  override: WorkflowExpandLevelDefault | undefined,
+  streamingSetting: WorkflowExpandLevel,
+): WorkflowExpandLevelDefault => {
+  const explicit =
+    typeof override === 'string' ? { completion: override, streaming: override } : override;
+
+  return { ...explicit, streaming: explicit?.streaming ?? streamingSetting };
+};

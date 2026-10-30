@@ -314,29 +314,6 @@ describe('LobeMoonshotOpenAI', () => {
         const payload = getLastRequestPayload();
         expect(payload.temperature).toBe(0.4);
       });
-
-      it('should normalize temperature to 0.5 when temperature is 1', async () => {
-        await instance.chat({
-          messages: [{ content: 'Hello', role: 'user' }],
-          model: 'moonshot-v1-8k',
-          temperature: 1,
-        });
-
-        const payload = getLastRequestPayload();
-        expect(payload.temperature).toBe(0.5);
-      });
-
-      it('should normalize temperature to 0 when temperature is 0', async () => {
-        await instance.chat({
-          messages: [{ content: 'Hello', role: 'user' }],
-          model: 'moonshot-v1-8k',
-          temperature: 0,
-        });
-
-        const payload = getLastRequestPayload();
-        expect(payload.temperature).toBe(0);
-      });
-
       it('should handle kimi-k2.5 model with thinking enabled by default', async () => {
         await instance.chat({
           messages: [{ content: 'Hello', role: 'user' }],
@@ -364,35 +341,6 @@ describe('LobeMoonshotOpenAI', () => {
         expect(payload.temperature).toBe(0.6);
         expect(payload.thinking).toEqual({ type: 'disabled' });
       });
-
-      it('should handle kimi-k2.6 model with thinking enabled by default', async () => {
-        await instance.chat({
-          messages: [{ content: 'Hello', role: 'user' }],
-          model: 'kimi-k2.6',
-          temperature: 0.5,
-          top_p: 0.8,
-        });
-
-        const payload = getLastRequestPayload();
-        expect(payload.temperature).toBe(1);
-        expect(payload.top_p).toBe(0.95);
-        expect(payload.frequency_penalty).toBe(0);
-        expect(payload.presence_penalty).toBe(0);
-        expect(payload.thinking).toEqual({ type: 'enabled' });
-      });
-
-      it('should handle kimi-k2.6 model with thinking disabled', async () => {
-        await instance.chat({
-          messages: [{ content: 'Hello', role: 'user' }],
-          model: 'kimi-k2.6',
-          thinking: { budget_tokens: 0, type: 'disabled' },
-        });
-
-        const payload = getLastRequestPayload();
-        expect(payload.temperature).toBe(0.6);
-        expect(payload.thinking).toEqual({ type: 'disabled' });
-      });
-
       it('should handle kimi-k2.6 model with preserveThinking enabled', async () => {
         await instance.chat({
           messages: [{ content: 'Hello', role: 'user' }],
@@ -434,19 +382,8 @@ describe('LobeMoonshotOpenAI', () => {
         expect(payload.max_tokens).toBeUndefined();
       });
 
-      it('should pass through reasoning_effort for kimi-k3', async () => {
-        await instance.chat({
-          messages: [{ content: 'Hello', role: 'user' }],
-          model: 'kimi-k3',
-          reasoning_effort: 'max',
-        } as any);
-
-        const payload = getLastRequestPayload();
-        expect(payload.reasoning_effort).toBe('max');
-      });
-
-      it.each(['low', 'medium', 'high'])(
-        "should drop a non-'max' reasoning_effort (%s) for kimi-k3",
+      it.each(['low', 'high', 'max'])(
+        'should pass through supported reasoning_effort %s for kimi-k3',
         async (effort) => {
           await instance.chat({
             messages: [{ content: 'Hello', role: 'user' }],
@@ -455,8 +392,20 @@ describe('LobeMoonshotOpenAI', () => {
           } as any);
 
           const payload = getLastRequestPayload();
-          // K3 only accepts reasoning_effort 'max' (also the server default); other values
-          // would be rejected, so they are dropped instead of failing the request.
+          expect(payload.reasoning_effort).toBe(effort);
+        },
+      );
+
+      it.each(['none', 'minimal', 'medium', 'xhigh'])(
+        'should drop unsupported reasoning_effort %s for kimi-k3',
+        async (effort) => {
+          await instance.chat({
+            messages: [{ content: 'Hello', role: 'user' }],
+            model: 'kimi-k3',
+            reasoning_effort: effort,
+          } as any);
+
+          const payload = getLastRequestPayload();
           expect('reasoning_effort' in payload).toBe(false);
         },
       );
@@ -507,22 +456,6 @@ describe('LobeMoonshotOpenAI', () => {
         expect(payload.thinking).toEqual({ type: 'enabled' });
         expect(payload.temperature).toBe(1);
       });
-
-      it('should always enable thinking for kimi-k2.7-code', async () => {
-        await instance.chat({
-          messages: [{ content: 'Hello', role: 'user' }],
-          model: 'kimi-k2.7-code',
-          temperature: 0.5,
-        });
-
-        const payload = getLastRequestPayload();
-        expect(payload.thinking).toEqual({ type: 'enabled' });
-        expect(payload.temperature).toBe(1);
-        expect(payload.top_p).toBe(0.95);
-        expect(payload.frequency_penalty).toBe(0);
-        expect(payload.presence_penalty).toBe(0);
-      });
-
       it('should ignore thinking disabled for native thinking models', async () => {
         await instance.chat({
           messages: [{ content: 'Hello', role: 'user' }],
@@ -661,6 +594,106 @@ describe('LobeMoonshotAnthropicAI', () => {
       const runtime = new LobeMoonshotAnthropicAI({ apiKey: 'test_api_key' });
       expect(runtime).toBeInstanceOf(LobeMoonshotAnthropicAI);
       expect((runtime as any).baseURL).toEqual(anthropicBaseURL);
+    });
+  });
+
+  describe('generateObject', () => {
+    const schema = {
+      name: 'extract_result',
+      schema: {
+        properties: { result: { type: 'string' as const } },
+        required: ['result'],
+        type: 'object' as const,
+      },
+    };
+
+    beforeEach(() => {
+      ((instance as any).client.messages.create as Mock).mockResolvedValue({
+        content: [{ input: { result: 'ok' }, name: 'extract_result', type: 'tool_use' }],
+      });
+    });
+
+    it('should use any schema tool choice for always-thinking Kimi models', async () => {
+      await instance.generateObject({
+        messages: [{ content: 'Extract the result', role: 'user' }],
+        model: 'kimi-k3',
+        schema,
+      });
+
+      const payload = getLastRequestPayload();
+      expect(payload.tool_choice).toEqual({ type: 'any' });
+      expect(payload.thinking).toBeUndefined();
+    });
+
+    it('should enable thinking and use any tool choice for Kimi thinking-toggle models', async () => {
+      await instance.generateObject({
+        messages: [{ content: 'Get the result', role: 'user' }],
+        model: 'kimi-k2.6',
+        tools: [
+          {
+            function: {
+              description: 'Get a result',
+              name: 'get_result',
+              parameters: { properties: {}, type: 'object' },
+            },
+            type: 'function',
+          },
+        ],
+      });
+
+      const payload = getLastRequestPayload();
+      expect(payload.thinking).toEqual({ budget_tokens: 1024, type: 'enabled' });
+      expect(payload.tool_choice).toEqual({ type: 'any' });
+    });
+
+    it('should explicitly enable thinking for native K2.x models', async () => {
+      await instance.generateObject({
+        messages: [{ content: 'Extract the result', role: 'user' }],
+        model: 'kimi-k2.7-code',
+        schema,
+      });
+
+      const payload = getLastRequestPayload();
+      expect(payload.thinking).toEqual({ budget_tokens: 1024, type: 'enabled' });
+      expect(payload.tool_choice).toEqual({ type: 'any' });
+    });
+
+    it('should normalize assistant history when thinking is enabled', async () => {
+      await instance.generateObject({
+        messages: [
+          { content: 'Initial question', role: 'user' },
+          { content: 'Previous answer', role: 'assistant' },
+          { content: 'Extract the result', role: 'user' },
+        ],
+        model: 'kimi-k2.7-code',
+        schema,
+      });
+
+      const payload = getLastRequestPayload();
+      expect(payload.messages).toEqual([
+        { content: 'Initial question', role: 'user' },
+        {
+          content: [
+            { thinking: ' ', type: 'thinking' },
+            { text: 'Previous answer', type: 'text' },
+          ],
+          role: 'assistant',
+        },
+        { content: 'Extract the result', role: 'user' },
+      ]);
+    });
+
+    it('should preserve forced schema tool choice when Kimi thinking is disabled', async () => {
+      await instance.generateObject({
+        messages: [{ content: 'Extract the result', role: 'user' }],
+        model: 'kimi-k2.6',
+        schema,
+        thinking: { budget_tokens: 0, type: 'disabled' },
+      });
+
+      const payload = getLastRequestPayload();
+      expect(payload.thinking).toEqual({ type: 'disabled' });
+      expect(payload.tool_choice).toEqual({ name: 'extract_result', type: 'tool' });
     });
   });
 

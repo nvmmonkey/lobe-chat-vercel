@@ -1,6 +1,6 @@
+import type { AiFullModelCard } from 'model-bank';
 import type { PartialDeep } from 'type-fest';
 
-import type { ChatModelCard } from './llm';
 import type {
   GlobalLLMProviderKey,
   UserDefaultAgent,
@@ -19,14 +19,55 @@ import type {
  */
 export type IFeatureFlagsState = {
   enableAgentOnboarding: boolean | undefined;
-  enableAgentSelfIteration: boolean | undefined;
+  /**
+   * Agent Share capability: may this user publish an Agent as a shared link AND
+   * open/chat on an already-live shared agent. One allowlist gates both sides.
+   */
+  enableAgentShare: boolean | undefined;
   enableAuthCaptcha: boolean | undefined;
+  /**
+   * Multi-agent Channels (`channel`). Off by default: the sidebar section and Channel pages are
+   * hidden and the Channel APIs answer FORBIDDEN.
+   */
+  enableChannels: boolean | undefined;
   enableCheckUpdates: boolean | undefined;
+  /**
+   * Dashboards and the `lobe-dashboard` agent tool (`dashboard`). Off by
+   * default: the pages, Portal view, in-chat previews and the tool are hidden
+   * and the widget / dashboard APIs answer FORBIDDEN.
+   */
+  enableDashboard: boolean | undefined;
+  enableDevDock: boolean | undefined;
+  /**
+   * Rollout gate for the multiplexed gateway socket. Necessary but not
+   * sufficient: the transport also requires
+   * `GlobalServerConfig.agentGatewayProtocol === 2`.
+   */
+  enableGatewayMux: boolean | undefined;
+  /**
+   * LobeHub Mobile rollout gate for the multiplexed gateway socket and
+   * protocol-v2 payloads; independent from `enableGatewayMux`.
+   */
+  enableGatewayMuxMobile: boolean | undefined;
+  /**
+   * Rollout gate for the bot-wake pipeline (`bot_wake`), evaluated for the bot's owner. Read only
+   * by the server; it is part of the state because the two flag types must not drift apart.
+   */
+  enableBotWake: boolean | undefined;
   enableKnowledgeBase: boolean | undefined;
+  /**
+   * Rollout gate for relaying LLM calls of device-only model providers to the
+   * client that started the run (`agent_llm_relay`). The client declares itself
+   * as an executor only when this is on; the server checks it again.
+   */
+  enableLlmRelay: boolean | undefined;
   enableOnboardingV2: boolean | undefined;
   enableRAGEval: boolean | undefined;
   enableSTT: boolean | undefined;
   enableStorageOverage: boolean | undefined;
+  /** Hover previews of a topic's final answer (`topic_preview`). */
+  enableTopicPreview: boolean | undefined;
+  enableVoiceDictation: boolean | undefined;
   enableWorkspace: boolean | undefined;
   hideDocs: boolean | undefined;
   hideGitHub: boolean | undefined;
@@ -66,7 +107,7 @@ export interface GlobalMemoryConfig {
   userMemory?: GlobalMemoryExtractionConfig;
 }
 
-export interface VisualUnderstandingConfig {
+export interface MultimodalUnderstandingConfig {
   model: string;
   provider: string;
 }
@@ -78,12 +119,23 @@ export interface ServerModelProviderConfig {
   /**
    * the model lists defined in server
    */
-  serverModelLists?: ChatModelCard[];
+  serverModelLists?: AiFullModelCard[];
 }
 
 export type ServerLanguageModel = Partial<Record<GlobalLLMProviderKey, ServerModelProviderConfig>>;
 
 export interface GlobalServerConfig {
+  /**
+   * Which Agent Gateway wire protocol this deployment's gateway can serve:
+   * `2` when it exposes the per-user multiplexed socket (`/v2/ws`), `1` when
+   * it only has the per-operation one (`/ws`). Absent ⇒ 1.
+   *
+   * A capability, not a rollout switch: the client may only pick the
+   * multiplexed transport where the server says it exists, and there is no
+   * negotiation on the socket itself — dialing `/v2/ws` on a gateway without
+   * it is a 404 with nothing to fall back to until the client gives up.
+   */
+  agentGatewayProtocol?: 1 | 2;
   /**
    * Agent Gateway URL for WebSocket-based agent execution.
    * When set, the SPA can offload agent execution to the server and receive
@@ -92,6 +144,13 @@ export interface GlobalServerConfig {
   agentGatewayUrl?: string;
   aiProvider: ServerLanguageModel;
   defaultAgent?: PartialDeep<UserDefaultAgent>;
+  /** Whether the server has DEVICE_GATEWAY_URL configured, independent of its public URL. */
+  deviceGatewayConfigured?: boolean;
+  /**
+   * Public Device Gateway base URL (`DEVICE_GATEWAY_PUBLIC_URL`). Absent when not
+   * configured; clients then keep the address they manage themselves.
+   */
+  deviceGatewayUrl?: string;
   disableEmailPassword?: boolean;
   enableBusinessFeatures?: boolean;
   enableComposio?: boolean;
@@ -107,11 +166,24 @@ export interface GlobalServerConfig {
   enableLobehubSkill?: boolean;
   enableMagicLink?: boolean;
   enableMarketTrustedClient?: boolean;
+  enableMultimodalUnderstanding?: boolean;
   enableUploadFileToServer?: boolean;
-  enableVisualUnderstanding?: boolean;
   image?: PartialDeep<UserImageConfig>;
+  /**
+   * Whether the server can relay an LLM call to a browser tab (Agent Gateway
+   * with its service token + Redis). The one-shot relay is used only then.
+   */
+  llmRelayAvailable?: boolean;
   memory?: GlobalMemoryConfig;
+  multimodalUnderstanding?: MultimodalUnderstandingConfig;
   oAuthSSOProviders?: string[];
+  /**
+   * Public issuer of the built-in OIDC provider (`APP_URL` + `/oidc`) — the
+   * exact value the provider signs into tokens and discovery. Clients show
+   * this to developers instead of their own origin, which differs behind a
+   * reverse proxy or on desktop.
+   */
+  oidcIssuer?: string;
   systemAgent?: PartialDeep<UserServiceModelConfig>;
   telemetry: {
     langfuse?: boolean;
@@ -125,7 +197,6 @@ export interface GlobalServerConfig {
    * Undefined means "not configured": the default (64) applies.
    */
   toolNameMaxLength?: number;
-  visualUnderstanding?: VisualUnderstandingConfig;
 }
 
 export interface GlobalBillboardItemLocaleFields {
@@ -135,6 +206,12 @@ export interface GlobalBillboardItemLocaleFields {
 }
 
 export interface GlobalBillboardItem {
+  /**
+   * In-app action enum as delivered by the platform (unvalidated string).
+   * The client narrows it at runtime against the registry in
+   * `src/features/Billboard/actions.ts`; unrecognized values fall back to `linkUrl`.
+   */
+  action?: string | null;
   cover?: string | null;
   description: string;
   /**

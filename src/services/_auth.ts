@@ -7,8 +7,8 @@ import {
   type OpenAICompatibleKeyVault,
   type VertexAIKeyVault,
 } from '@lobechat/types';
-import { clientApiKeyManager } from '@lobechat/utils/client';
-import { ModelProvider } from 'model-bank';
+import { clientApiKeyManager } from '@lobechat/utils/client/apiKeyManager';
+import { ModelProvider } from 'model-bank/modelProvider';
 
 import { aiProviderSelectors, useAiInfraStore } from '@/store/aiInfra';
 

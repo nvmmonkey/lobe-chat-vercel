@@ -2,17 +2,30 @@ import type { AlertProps, AvatarProps, DivProps, FlexboxProps } from '@lobehub/u
 import type { EditableMessageProps, MetaData } from '@lobehub/ui/chat';
 import type { ReactNode } from 'react';
 
+/**
+ * `MetaData` from `@lobehub/ui/chat` predates the agent's `name`/`title` split, so
+ * it only carries `title`. Every caller in this app passes an agent meta that also
+ * has `name` (see `useAgentMeta`), which is what the author label resolves from.
+ */
+export type ChatItemAvatarMeta = MetaData & { name?: string | null };
+
 export interface ChatItemProps extends Omit<FlexboxProps, 'children' | 'onChange'> {
   aboveMessage?: ReactNode;
   actionAddon?: ReactNode;
   actions?: ReactNode;
   actionsWrapWidth?: number;
   afterActions?: ReactNode;
-  avatar: MetaData;
+  /**
+   * Set on agent messages: the avatar becomes an agent avatar, drawing the
+   * agent's generated character when it has no avatar of its own. The id seeds
+   * that character; an empty id falls back to the conversation's agent.
+   */
+  agentId?: string | null;
+  avatar: ChatItemAvatarMeta;
   avatarProps?: AvatarProps;
   belowMessage?: ReactNode;
   children?: ReactNode;
-  customAvatarRender?: (avatar: MetaData, node: ReactNode) => ReactNode;
+  customAvatarRender?: (avatar: ChatItemAvatarMeta, node: ReactNode) => ReactNode;
   customErrorRender?: (error: AlertProps) => ReactNode;
   /**
    * @description Whether the chat item is disabled
@@ -28,6 +41,8 @@ export interface ChatItemProps extends Omit<FlexboxProps, 'children' | 'onChange
    */
   error?: AlertProps;
   fontSize?: number;
+  /** Rendered in the header row next to the time, independent of `showTitle`. */
+  headerAddon?: ReactNode;
   /**
    * @description Whether the chat item is in loading state
    */

@@ -1,8 +1,7 @@
 import { AGENT_CHAT_TOPIC_URL } from '@lobechat/const';
 import type { ChatTopicStatus } from '@lobechat/types';
-import type { MenuProps } from '@lobehub/ui';
-import { Icon } from '@lobehub/ui';
-import { App } from 'antd';
+import type { DropdownItem } from '@lobehub/ui';
+import { Icon, toast } from '@lobehub/ui';
 import {
   Archive,
   ArchiveRestore,
@@ -12,8 +11,9 @@ import {
   LucideCopy,
   PanelTop,
   PencilLine,
+  Pin,
+  PinOff,
   Share2,
-  Star,
   Trash,
   Wand2,
 } from 'lucide-react';
@@ -51,9 +51,9 @@ export const useDropdownMenu = ({
   status,
   topicId,
   topicTitle,
-}: UseDropdownMenuProps): (() => MenuProps['items']) => {
+}: UseDropdownMenuProps): (() => DropdownItem[]) => {
   const { t } = useTranslation(['common', 'topic']);
-  const { message } = App.useApp();
+
   const appOrigin = useAppOrigin();
   const navigate = useWorkspaceAwareNavigate();
   const activeWorkspaceSlug = useActiveWorkspaceSlug();
@@ -83,7 +83,7 @@ export const useDropdownMenu = ({
 
   const isCompleted = status === 'completed';
   const handleOpenShareModal = useCallback(() => {
-    openShareModal({ context: { threadId: null, topicId } });
+    void openShareModal({ context: { threadId: null, topicId } });
   }, [topicId]);
 
   return useCallback(
@@ -103,20 +103,20 @@ export const useDropdownMenu = ({
               markTopicCompleted(topicId);
             }
           },
+          sfSymbol: isCompleted ? 'tray.and.arrow.up' : 'archivebox',
         },
         {
           type: 'divider' as const,
         },
         {
           disabled: !canEditTopic,
-          icon: <Icon icon={Star} />,
+          icon: <Icon icon={fav ? PinOff : Pin} />,
           key: 'favorite',
-          label: fav
-            ? t('actions.unfavorite', { ns: 'topic' })
-            : t('actions.favorite', { ns: 'topic' }),
+          label: fav ? t('actions.unpin', { ns: 'topic' }) : t('actions.pin', { ns: 'topic' }),
           onClick: () => {
             favoriteTopic(topicId, !fav);
           },
+          sfSymbol: fav ? 'pin.slash' : 'pin',
         },
         {
           type: 'divider' as const,
@@ -129,6 +129,7 @@ export const useDropdownMenu = ({
           onClick: () => {
             autoRenameTopicTitle(topicId);
           },
+          sfSymbol: 'wand.and.stars',
         },
         {
           disabled: !canEditTopic,
@@ -145,6 +146,7 @@ export const useDropdownMenu = ({
               title: t('renameModal.title', { ns: 'topic' }),
             });
           },
+          sfSymbol: 'pencil',
         },
         {
           type: 'divider' as const,
@@ -189,7 +191,7 @@ export const useDropdownMenu = ({
           label: t('actions.copySessionId', { ns: 'topic' }),
           onClick: () => {
             void navigator.clipboard.writeText(topicId);
-            message.success(t('actions.copySessionIdSuccess', { ns: 'topic' }));
+            toast.success(t('actions.copySessionIdSuccess', { ns: 'topic' }));
           },
         },
         {
@@ -199,9 +201,12 @@ export const useDropdownMenu = ({
           label: t('actions.copyLink', { ns: 'topic' }),
           onClick: () => {
             if (!agentId) return;
-            const url = `${appOrigin}${AGENT_CHAT_TOPIC_URL(agentId, topicId)}`;
+            const url = `${appOrigin}${buildWorkspaceAwarePath(
+              AGENT_CHAT_TOPIC_URL(agentId, topicId),
+              activeWorkspaceSlug,
+            )}`;
             void navigator.clipboard.writeText(url);
-            message.success(t('actions.copyLinkSuccess', { ns: 'topic' }));
+            toast.success(t('actions.copyLinkSuccess', { ns: 'topic' }));
           },
         },
         {
@@ -222,6 +227,7 @@ export const useDropdownMenu = ({
           key: 'share',
           label: t('share'),
           onClick: handleOpenShareModal,
+          sfSymbol: 'square.and.arrow.up',
         },
         {
           type: 'divider' as const,
@@ -242,8 +248,9 @@ export const useDropdownMenu = ({
               topicIds: [topicId],
             });
           },
+          sfSymbol: 'trash',
         },
-      ].filter(Boolean) as MenuProps['items'],
+      ].filter(Boolean) as DropdownItem[],
     [
       addTab,
       activeWorkspaceSlug,
@@ -258,7 +265,6 @@ export const useDropdownMenu = ({
       handleOpenShareModal,
       isCompleted,
       markTopicCompleted,
-      message,
       navigate,
       onClose,
       onDelete,
